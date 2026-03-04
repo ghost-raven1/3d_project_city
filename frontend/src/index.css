@@ -1,0 +1,18 @@
+:root {
+  font-family: 'Avenir Next', 'Segoe UI', sans-serif;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background:
+    radial-gradient(circle at 12% 16%, rgb(255 255 255 / 78%), transparent 42%),
+    radial-gradient(circle at 78% 30%, rgb(145 204 255 / 24%), transparent 35%),
+    linear-gradient(145deg, #e4f1ff 0%, #eff5fc 52%, #e3ecf7 100%);
+}

@@ -1,0 +1,46 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      PORT: 3000
+      SQLITE_PATH: /app/data/repositories.sqlite
+      MAX_COMMITS: 0
+      GITHUB_CONCURRENCY: 5
+      HISTORY_FETCH_MAX_PAGES: 90
+      HISTORY_FETCH_MAX_MS: 240000
+      GITHUB_REQUEST_TIMEOUT_MS: 120000
+      GITHUB_REQUEST_RETRIES: 2
+      GITHUB_RETRY_BASE_DELAY_MS: 1200
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      IMPORT_SCAN_LIMIT: 220
+      IMPORT_CONCURRENCY: 4
+      IMPORT_REQUEST_TIMEOUT_MS: 8000
+      IMPORT_ANALYSIS_TIMEOUT_MS: 45000
+      IMPORT_SOURCE_CHAR_LIMIT: 300000
+      GITHUB_CONTENT_MAX_BYTES: 350000
+      STACK_PROBE_LIMIT: 30
+      STACK_PROBE_CONCURRENCY: 4
+      STACK_PROBE_TIMEOUT_MS: 9000
+      BRANCH_PROBE_LIMIT: 22
+      BRANCH_COMMIT_PROBE_LIMIT: 90
+      BRANCH_PROBE_CONCURRENCY: 4
+    ports:
+      - '3000:3000'
+    volumes:
+      - backend_data:/app/data
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_URL: http://localhost:3000
+    ports:
+      - '8080:80'
+    depends_on:
+      - backend
+
+volumes:
+  backend_data:
