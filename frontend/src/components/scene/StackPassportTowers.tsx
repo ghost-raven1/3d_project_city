@@ -2,6 +2,11 @@ import { memo, useMemo } from 'react';
 import { Text } from '@react-three/drei';
 import { StackPassport } from '../../types/repository';
 import { CityBounds } from './types';
+import {
+  SCENE_HUD_OUTLINE_DARK,
+  SCENE_HUD_PANEL_LIGHT,
+  SCENE_HUD_PANEL_TEXT_DARK,
+} from './scene-hud-colors';
 
 interface StackPassportTowersProps {
   stack: StackPassport | null;
@@ -122,7 +127,7 @@ export const StackPassportTowers = memo(function StackPassportTowers({
           <mesh position={[0, node.height + 0.22, 0]}>
             <boxGeometry args={[2.2, 0.42, 0.08]} />
             <meshStandardMaterial
-              color="#eef6ff"
+              color={SCENE_HUD_PANEL_LIGHT}
               emissive={node.color}
               emissiveIntensity={0.22}
               transparent
@@ -133,9 +138,11 @@ export const StackPassportTowers = memo(function StackPassportTowers({
           <Text
             position={[0, node.height + 0.24, 0.05]}
             fontSize={0.13}
-            color="#0f223a"
+            color={SCENE_HUD_PANEL_TEXT_DARK}
             anchorX="center"
             anchorY="middle"
+            outlineWidth={0.012}
+            outlineColor={SCENE_HUD_OUTLINE_DARK}
             maxWidth={2.1}
           >
             {node.label}
@@ -145,4 +152,3 @@ export const StackPassportTowers = memo(function StackPassportTowers({
     </>
   );
 });
-

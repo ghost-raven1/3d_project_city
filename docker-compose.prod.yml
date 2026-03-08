@@ -1,0 +1,186 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-repo_city}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+    expose:
+      - '5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-repo_city}
+      interval: 10s
+      timeout: 5s
+      retries: 8
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    expose:
+      - '11434'
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - ollama list >/dev/null 2>&1
+      interval: 15s
+      timeout: 5s
+      retries: 8
+    restart: unless-stopped
+
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b-instruct}
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        echo "Waiting for Ollama..."
+        until ollama list >/dev/null 2>&1; do sleep 2; done
+        echo "Pulling model $${OLLAMA_MODEL}"
+        ollama pull "$${OLLAMA_MODEL}"
+    restart: 'no'
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}@postgres:5432/${POSTGRES_DB:-repo_city}
+      DB_SYNCHRONIZE: ${DB_SYNCHRONIZE:-false}
+      DB_ALLOW_SYNC_IN_PRODUCTION: ${DB_ALLOW_SYNC_IN_PRODUCTION:-false}
+      DB_SSL: 'false'
+      MAX_COMMITS: 0
+      GITHUB_CONCURRENCY: 5
+      HISTORY_FETCH_MAX_PAGES: 90
+      HISTORY_FETCH_MAX_MS: 240000
+      GITHUB_REQUEST_TIMEOUT_MS: 120000
+      GITHUB_REQUEST_RETRIES: 2
+      GITHUB_RETRY_BASE_DELAY_MS: 1200
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      IMPORT_SCAN_LIMIT: 220
+      IMPORT_CONCURRENCY: 4
+      IMPORT_REQUEST_TIMEOUT_MS: 8000
+      IMPORT_ANALYSIS_TIMEOUT_MS: 45000
+      IMPORT_SOURCE_CHAR_LIMIT: 300000
+      GITHUB_CONTENT_MAX_BYTES: 350000
+      STACK_PROBE_LIMIT: 30
+      STACK_PROBE_CONCURRENCY: 4
+      STACK_PROBE_TIMEOUT_MS: 9000
+      BRANCH_PROBE_LIMIT: 22
+      BRANCH_COMMIT_PROBE_LIMIT: 90
+      BRANCH_PROBE_CONCURRENCY: 4
+      CORS_ORIGIN: ${CORS_ORIGIN:?set CORS_ORIGIN in .env.prod}
+      WS_CORS_ORIGIN: ${WS_CORS_ORIGIN:?set WS_CORS_ORIGIN in .env.prod}
+      PARSE_MIN_INTERVAL_MS: ${PARSE_MIN_INTERVAL_MS:-3500}
+      MAX_ACTIVE_PARSE_RUNS: ${MAX_ACTIVE_PARSE_RUNS:-3}
+      ROOM_MESSAGE_MIN_INTERVAL_MS: ${ROOM_MESSAGE_MIN_INTERVAL_MS:-180}
+      NARRATOR_ENABLED: 'true'
+      NARRATOR_BASE_URL: http://ollama:11434
+      NARRATOR_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b-instruct}
+      NARRATOR_REQUIRE_LLM: 'true'
+      NARRATOR_TIMEOUT_MS: 35000
+      NARRATOR_NUM_PREDICT: 120
+      NARRATOR_MIN_NUM_PREDICT: 56
+      NARRATOR_ENDPOINT_PREFERENCE: chat-first
+      NARRATOR_MIN_INTERVAL_MS: 1400
+      NARRATOR_MAX_PROMPT_CHARS: 320
+    expose:
+      - '3000'
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "fetch('http://127.0.0.1:3000/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 8
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:?set VITE_API_URL in .env.prod}
+    expose:
+      - '80'
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O - http://127.0.0.1/ >/dev/null 2>&1
+      interval: 20s
+      timeout: 5s
+      retries: 8
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  edge:
+    image: nginx:1.27-alpine
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env.prod}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./infra/nginx/templates:/etc/nginx/templates-src:ro
+      - ./infra/nginx/entrypoint/04-select-template.sh:/docker-entrypoint.d/04-select-template.sh:ro
+      - certbot_www:/var/www/certbot
+      - certbot_certs:/etc/letsencrypt
+    command:
+      - /bin/sh
+      - -c
+      - |
+        while :; do
+          sleep 6h & wait $${!}
+          nginx -s reload
+        done &
+        exec nginx -g 'daemon off;'
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O - http://127.0.0.1/ >/dev/null 2>&1
+      interval: 20s
+      timeout: 5s
+      retries: 8
+    restart: unless-stopped
+
+  certbot:
+    image: certbot/certbot:latest
+    volumes:
+      - certbot_www:/var/www/certbot
+      - certbot_certs:/etc/letsencrypt
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        trap exit TERM
+        while :; do
+          certbot renew --webroot -w /var/www/certbot --quiet
+          sleep 12h & wait $${!}
+        done
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  ollama_data:
+  certbot_www:
+  certbot_certs:

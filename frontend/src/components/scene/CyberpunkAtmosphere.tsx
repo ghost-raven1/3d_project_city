@@ -20,7 +20,7 @@ import {
   SRGBColorSpace,
 } from 'three';
 import { CityPalette } from '../../utils/city-dna';
-import { CityBounds } from './types';
+import { CityBounds, PostFxQuality } from './types';
 
 interface CyberpunkAtmosphereProps {
   enabled: boolean;
@@ -31,6 +31,7 @@ interface CyberpunkAtmosphereProps {
   starDensity: number;
   timeOfDay: 'dawn' | 'day' | 'sunset' | 'night';
   weather: 'clear' | 'mist' | 'rain' | 'storm';
+  quality: PostFxQuality;
 }
 
 interface NeonOrb {
@@ -139,6 +140,7 @@ export const CyberpunkAtmosphere = memo(function CyberpunkAtmosphere({
   starDensity,
   timeOfDay,
   weather,
+  quality,
 }: CyberpunkAtmosphereProps) {
   const orbRefs = useRef<Array<Group | null>>([]);
   const skyboxRef = useRef<Mesh | null>(null);
@@ -147,6 +149,10 @@ export const CyberpunkAtmosphere = memo(function CyberpunkAtmosphere({
   const rainRef = useRef<InstancedMesh | null>(null);
   const lightningRef = useRef<PointLight | null>(null);
   const rainDummy = useMemo(() => new Object3D(), []);
+  const qualityScale = useMemo(
+    () => (quality === 'high' ? 1 : quality === 'medium' ? 0.72 : 0.48),
+    [quality],
+  );
 
   const skyboxTexture = useMemo(
     () => createSkyboxTexture(seed, palette),
@@ -164,8 +170,8 @@ export const CyberpunkAtmosphere = memo(function CyberpunkAtmosphere({
       weather === 'storm' ? 1.55 : weather === 'rain' ? 1.32 : weather === 'mist' ? 1.45 : 1;
     const timeCloudBoost = timeOfDay === 'night' ? 0.82 : 1;
     const count = Math.max(
-      3,
-      Math.floor(cloudiness * 8 * weatherCloudBoost * timeCloudBoost),
+      quality === 'low' ? 2 : 3,
+      Math.floor(cloudiness * 8 * weatherCloudBoost * timeCloudBoost * qualityScale),
     );
     const clouds = [] as Array<{
       x: number;
@@ -203,13 +209,19 @@ export const CyberpunkAtmosphere = memo(function CyberpunkAtmosphere({
     cityBounds.centerZ,
     cityBounds.size,
     cloudiness,
+    quality,
+    qualityScale,
     seed,
     timeOfDay,
     weather,
   ]);
 
   const neonOrbs = useMemo<NeonOrb[]>(() => {
-    const count = 8 + (seed % 5);
+    const baseCount = 8 + (seed % 5);
+    const count = Math.max(
+      quality === 'low' ? 3 : 5,
+      Math.round(baseCount * qualityScale),
+    );
     const baseRadius = cityBounds.size * 0.34;
 
     return Array.from({ length: count }, (_, index) => {
@@ -226,7 +238,7 @@ export const CyberpunkAtmosphere = memo(function CyberpunkAtmosphere({
         phase,
       };
     });
-  }, [cityBounds.centerX, cityBounds.centerZ, cityBounds.size, seed]);
+  }, [cityBounds.centerX, cityBounds.centerZ, cityBounds.size, quality, qualityScale, seed]);
 
   const edgeBands = useMemo(() => {
     const base = cityBounds.size;
@@ -237,8 +249,11 @@ export const CyberpunkAtmosphere = memo(function CyberpunkAtmosphere({
     ];
   }, [cityBounds.size]);
   const rainDrops = useMemo(() => {
+    const baseCount = weather === 'storm' ? 440 : weather === 'rain' ? 300 : 0;
     const count =
-      weather === 'storm' ? 440 : weather === 'rain' ? 300 : 0;
+      baseCount === 0
+        ? 0
+        : Math.max(quality === 'low' ? 80 : 140, Math.round(baseCount * qualityScale));
     if (count === 0) {
       return [] as Array<{
         x: number;
@@ -265,7 +280,7 @@ export const CyberpunkAtmosphere = memo(function CyberpunkAtmosphere({
       speed: 0.6 + next() * 1.2,
       length: 0.45 + next() * 1.1,
     }));
-  }, [cityBounds.centerX, cityBounds.centerZ, cityBounds.size, seed, weather]);
+  }, [cityBounds.centerX, cityBounds.centerZ, cityBounds.size, quality, qualityScale, seed, weather]);
   const skyPreset = useMemo(() => {
     const byTime = {
       dawn: {
@@ -317,6 +332,22 @@ export const CyberpunkAtmosphere = memo(function CyberpunkAtmosphere({
               ? 0.15
               : 0.2,
     };
+  }, [timeOfDay, weather]);
+  const neonStrength = useMemo(() => {
+    let value =
+      timeOfDay === 'night'
+        ? 1
+        : timeOfDay === 'sunset'
+          ? 0.84
+          : timeOfDay === 'dawn'
+            ? 0.7
+            : 0.56;
+    if (weather === 'storm') {
+      value += 0.08;
+    } else if (weather === 'mist') {
+      value += 0.04;
+    }
+    return Math.max(0.5, Math.min(1.1, value));
   }, [timeOfDay, weather]);
 
   useFrame(({ clock }, delta) => {
@@ -405,6 +436,27 @@ export const CyberpunkAtmosphere = memo(function CyberpunkAtmosphere({
     return null;
   }
 
+  const skySegments = quality === 'high' ? [64, 48] : quality === 'medium' ? [46, 34] : [30, 22];
+  const cloudSegments = quality === 'high' ? 14 : quality === 'medium' ? 10 : 7;
+  const edgeSegments = quality === 'high' ? 96 : quality === 'medium' ? 72 : 48;
+  const ringSegments = quality === 'high' ? 160 : quality === 'medium' ? 108 : 72;
+  const mainRingSegments = quality === 'high' ? 220 : quality === 'medium' ? 160 : 110;
+  const orbLightBudget = quality === 'high' ? 8 : quality === 'medium' ? 5 : 3;
+  const starCount =
+    timeOfDay === 'night'
+      ? Math.max(
+          quality === 'low' ? 200 : 320,
+          Math.floor(starDensity * 0.56 * qualityScale),
+        )
+      : Math.max(
+          quality === 'low' ? 90 : 140,
+          Math.floor(starDensity * 0.24 * qualityScale),
+        );
+  const sparkleCount = Math.max(
+    quality === 'low' ? 50 : 90,
+    Math.round(160 * qualityScale),
+  );
+
   return (
     <>
       <mesh
@@ -412,13 +464,21 @@ export const CyberpunkAtmosphere = memo(function CyberpunkAtmosphere({
         position={[cityBounds.centerX, cityBounds.size * 0.2, cityBounds.centerZ]}
         rotation={[0, seed * 0.0005, 0]}
       >
-        <sphereGeometry args={[cityBounds.size * 2.8, 64, 48]} />
+        <sphereGeometry args={[cityBounds.size * 2.8, skySegments[0], skySegments[1]]} />
         <meshBasicMaterial
           map={skyboxTexture}
           side={DoubleSide}
           transparent
           depthWrite={false}
-          opacity={0.9}
+          opacity={
+            timeOfDay === 'night'
+              ? 0.9
+              : timeOfDay === 'sunset'
+                ? 0.84
+                : timeOfDay === 'dawn'
+                  ? 0.78
+                  : 0.7
+          }
         />
       </mesh>
 
@@ -434,21 +494,17 @@ export const CyberpunkAtmosphere = memo(function CyberpunkAtmosphere({
       <Stars
         radius={260}
         depth={80}
-        count={
-          timeOfDay === 'night'
-            ? Math.max(460, Math.floor(starDensity * 0.56))
-            : Math.max(220, Math.floor(starDensity * 0.24))
-        }
+        count={starCount}
         factor={1.6}
         saturation={0}
         fade
         speed={0.08}
       />
       <Sparkles
-        count={160}
+        count={sparkleCount}
         size={2.3}
         speed={0.16}
-        opacity={skyPreset.sparkleOpacity}
+        opacity={skyPreset.sparkleOpacity * (quality === 'low' ? 0.78 : 1)}
         color={palette.accent}
         scale={[cityBounds.size * 0.7, 44, cityBounds.size * 0.7]}
       />
@@ -460,7 +516,7 @@ export const CyberpunkAtmosphere = memo(function CyberpunkAtmosphere({
           speed={cloud.speed}
           opacity={cloud.opacity * skyPreset.cloudOpacityScale}
           bounds={cloud.bounds}
-          segments={14}
+          segments={cloudSegments}
         />
       ))}
 
@@ -503,17 +559,19 @@ export const CyberpunkAtmosphere = memo(function CyberpunkAtmosphere({
             <meshStandardMaterial
               color={palette.accent}
               emissive={palette.accent}
-              emissiveIntensity={1.5}
+              emissiveIntensity={1.1 * neonStrength}
               transparent
               opacity={0.9}
             />
           </mesh>
-          <pointLight
-            color={palette.accent}
-            intensity={1.2}
-            distance={8}
-            decay={2}
-          />
+          {index < orbLightBudget && (
+            <pointLight
+              color={palette.accent}
+              intensity={0.9 * neonStrength}
+              distance={8}
+              decay={2}
+            />
+          )}
         </group>
       ))}
 
@@ -531,7 +589,7 @@ export const CyberpunkAtmosphere = memo(function CyberpunkAtmosphere({
                 band.radius,
                 band.radius * 1.02,
                 band.height,
-                96,
+                edgeSegments,
                 1,
                 true,
               ]}
@@ -539,7 +597,7 @@ export const CyberpunkAtmosphere = memo(function CyberpunkAtmosphere({
             <meshStandardMaterial
               color={palette.fog}
               emissive={palette.accent}
-              emissiveIntensity={band.glow}
+              emissiveIntensity={band.glow * neonStrength}
               transparent
               opacity={band.opacity}
               side={DoubleSide}
@@ -559,12 +617,12 @@ export const CyberpunkAtmosphere = memo(function CyberpunkAtmosphere({
           position={[cityBounds.centerX, 0.11 + index * 0.018, cityBounds.centerZ]}
         >
           <ringGeometry
-            args={[band.radius * 0.92, band.radius * 1.05, 160]}
+            args={[band.radius * 0.92, band.radius * 1.05, ringSegments]}
           />
           <meshStandardMaterial
             color={palette.accent}
             emissive={palette.accent}
-            emissiveIntensity={0.68 + index * 0.2}
+            emissiveIntensity={(0.52 + index * 0.16) * neonStrength}
             transparent
             opacity={0.08 + index * 0.03}
             depthWrite={false}
@@ -576,11 +634,11 @@ export const CyberpunkAtmosphere = memo(function CyberpunkAtmosphere({
         rotation={[-Math.PI / 2, 0, 0]}
         position={[cityBounds.centerX, 0.09, cityBounds.centerZ]}
       >
-        <ringGeometry args={[cityBounds.size * 0.64, cityBounds.size * 0.7, 220]} />
+        <ringGeometry args={[cityBounds.size * 0.64, cityBounds.size * 0.7, mainRingSegments]} />
         <meshStandardMaterial
           color={palette.accent}
           emissive={palette.accent}
-          emissiveIntensity={0.8}
+          emissiveIntensity={0.62 * neonStrength}
           transparent
           opacity={0.14}
         />

@@ -7,16 +7,34 @@ import {
   Stack,
   Typography,
 } from '@mui/material';
+import InsightsRoundedIcon from '@mui/icons-material/InsightsRounded';
 import { RepositoryAnalysis } from '../types/repository';
 import { RepositoryInsights } from '../utils/insights';
 import { stringToColor } from '../utils/color';
+import {
+  panelChipSx,
+  panelEmptyStateSx,
+  panelMetaTextSx,
+  panelScrollSx,
+  panelSurfaceSx,
+  panelTitleSx,
+} from './panelStyles';
 
 interface InsightPanelProps {
   insights: RepositoryInsights;
   analysis?: RepositoryAnalysis | null;
+  topOffset?: number;
+  desktopBottomOffset?: number;
+  compact?: boolean;
 }
 
-export function InsightPanel({ insights, analysis }: InsightPanelProps) {
+export function InsightPanel({
+  insights,
+  analysis,
+  topOffset = 116,
+  desktopBottomOffset = 136,
+  compact = false,
+}: InsightPanelProps) {
   const shortenPath = (value: string): string => {
     if (value.length <= 34) {
       return value;
@@ -35,6 +53,10 @@ export function InsightPanel({ insights, analysis }: InsightPanelProps) {
     month: 'short',
     day: 'numeric',
   });
+  const desktopMaxHeight = `max(188px, calc(100vh - ${
+    topOffset + desktopBottomOffset
+  }px))`;
+  const mobileTopOffset = Math.max(82, Math.round(topOffset));
 
   return (
     <Paper
@@ -42,35 +64,48 @@ export function InsightPanel({ insights, analysis }: InsightPanelProps) {
       sx={{
         position: 'absolute',
         left: { xs: 8, md: 16 },
-        bottom: { xs: 8, md: 16 },
-        width: { xs: 'calc(100% - 16px)', sm: 360 },
-        maxHeight: { xs: '42%', md: '58%' },
+        top: { xs: mobileTopOffset, md: topOffset },
+        width: { xs: 'calc(100% - 16px)', sm: compact ? 332 : 360 },
+        maxHeight: {
+          xs: compact ? '36%' : '40%',
+          md: desktopMaxHeight,
+        },
         overflowY: 'auto',
-        p: 1.4,
-        backdropFilter: 'blur(6px)',
-        backgroundColor: 'rgba(255,255,255,0.86)',
-        border: '1px solid rgba(120,150,190,0.28)',
-        zIndex: 4,
+        p: compact ? 1.1 : 1.4,
+        zIndex: 16,
+        ...panelSurfaceSx,
+        ...panelScrollSx,
       }}
     >
       <Stack spacing={1}>
-        <Typography variant="subtitle2" fontWeight={800}>
-          Render Insights
-        </Typography>
-
-        <Stack direction="row" spacing={0.8} flexWrap="wrap">
-          <Chip size="small" label={`Files: ${insights.totalFiles}`} />
-          <Chip size="small" label={`Commits: ${insights.totalCommits}`} />
-          <Chip size="small" label={`Age: ${insights.ageDays}d`} />
+        <Stack direction="row" justifyContent="space-between" alignItems="center">
+          <Stack direction="row" spacing={0.6} alignItems="center">
+            <InsightsRoundedIcon fontSize="small" sx={{ color: '#8ef1ff' }} />
+            <Typography variant="subtitle2" fontWeight={800} sx={panelTitleSx}>
+              City Telemetry
+            </Typography>
+          </Stack>
+          <Chip
+            size="small"
+            variant="outlined"
+            label={`Graph ${Math.round(insights.graph.density * 100)}%`}
+            sx={panelChipSx}
+          />
         </Stack>
 
-        <Typography variant="caption" color="text.secondary">
+        <Stack direction="row" spacing={0.8} flexWrap="wrap">
+          <Chip size="small" label={`Files: ${insights.totalFiles}`} sx={panelChipSx} />
+          <Chip size="small" label={`Commits: ${insights.totalCommits}`} sx={panelChipSx} />
+          <Chip size="small" label={`Age: ${insights.ageDays}d`} sx={panelChipSx} />
+        </Stack>
+
+        <Typography variant="caption" sx={panelMetaTextSx}>
           History: {from} - {to}
         </Typography>
 
         <Divider />
 
-        <Typography variant="caption" fontWeight={700} color="text.secondary">
+        <Typography variant="caption" fontWeight={700} sx={panelTitleSx}>
           Stack (by file distribution)
         </Typography>
         <Stack spacing={0.5}>
@@ -88,7 +123,11 @@ export function InsightPanel({ insights, analysis }: InsightPanelProps) {
                 sx={{
                   height: 5,
                   borderRadius: 8,
-                  backgroundColor: 'rgba(155,180,215,0.25)',
+                  backgroundColor: 'rgba(88, 121, 168, 0.24)',
+                  '& .MuiLinearProgress-bar': {
+                    background:
+                      'linear-gradient(90deg, rgba(68,231,255,0.95), rgba(132,250,255,0.92), rgba(115,140,255,0.9))',
+                  },
                 }}
               />
             </Box>
@@ -97,7 +136,7 @@ export function InsightPanel({ insights, analysis }: InsightPanelProps) {
 
         {insights.frameworks.length > 0 && (
           <>
-            <Typography variant="caption" fontWeight={700} color="text.secondary">
+            <Typography variant="caption" fontWeight={700} sx={panelTitleSx}>
               Framework Hints
             </Typography>
             <Stack direction="row" spacing={0.6} flexWrap="wrap">
@@ -108,6 +147,7 @@ export function InsightPanel({ insights, analysis }: InsightPanelProps) {
                   label={framework}
                   variant="outlined"
                   color="primary"
+                  sx={panelChipSx}
                 />
               ))}
             </Stack>
@@ -120,7 +160,7 @@ export function InsightPanel({ insights, analysis }: InsightPanelProps) {
           insights.stack.ci.length > 0) && (
           <>
             <Divider />
-            <Typography variant="caption" fontWeight={700} color="text.secondary">
+            <Typography variant="caption" fontWeight={700} sx={panelTitleSx}>
               Stack Passport
             </Typography>
 
@@ -133,6 +173,7 @@ export function InsightPanel({ insights, analysis }: InsightPanelProps) {
                     label={item}
                     variant="outlined"
                     color="info"
+                    sx={panelChipSx}
                   />
                 ))}
               </Stack>
@@ -147,6 +188,7 @@ export function InsightPanel({ insights, analysis }: InsightPanelProps) {
                     label={item}
                     variant="outlined"
                     color="secondary"
+                    sx={panelChipSx}
                   />
                 ))}
               </Stack>
@@ -161,6 +203,7 @@ export function InsightPanel({ insights, analysis }: InsightPanelProps) {
                     label={item}
                     variant="outlined"
                     color="warning"
+                    sx={panelChipSx}
                   />
                 ))}
               </Stack>
@@ -175,6 +218,7 @@ export function InsightPanel({ insights, analysis }: InsightPanelProps) {
                     label={item}
                     variant="outlined"
                     color="success"
+                    sx={panelChipSx}
                   />
                 ))}
               </Stack>
@@ -185,7 +229,7 @@ export function InsightPanel({ insights, analysis }: InsightPanelProps) {
         {insights.branches.length > 0 && (
           <>
             <Divider />
-            <Typography variant="caption" fontWeight={700} color="text.secondary">
+            <Typography variant="caption" fontWeight={700} sx={panelTitleSx}>
               Branch Pulse (merge signals)
             </Typography>
             <Stack spacing={0.35}>
@@ -220,7 +264,7 @@ export function InsightPanel({ insights, analysis }: InsightPanelProps) {
         <Divider />
         {analysis && (
           <>
-            <Typography variant="caption" fontWeight={700} color="text.secondary">
+            <Typography variant="caption" fontWeight={700} sx={panelTitleSx}>
               Data Quality
             </Typography>
             <Stack direction="row" spacing={0.6} flexWrap="wrap">
@@ -233,23 +277,27 @@ export function InsightPanel({ insights, analysis }: InsightPanelProps) {
                 }
                 color={analysis.commitHistory.truncated ? 'warning' : 'success'}
                 variant="outlined"
+                sx={panelChipSx}
               />
               <Chip
                 size="small"
                 label={analysis.imports.truncated ? 'Imports: truncated' : 'Imports: full'}
                 color={analysis.imports.truncated ? 'warning' : 'success'}
                 variant="outlined"
+                sx={panelChipSx}
               />
               <Chip
                 size="small"
                 label={analysis.stack.truncated ? 'Stack: truncated' : 'Stack: full'}
                 color={analysis.stack.truncated ? 'warning' : 'success'}
                 variant="outlined"
+                sx={panelChipSx}
               />
               <Chip
                 size="small"
                 label={`GitHub requests: ${analysis.diagnostics.githubRequests}`}
                 variant="outlined"
+                sx={panelChipSx}
               />
             </Stack>
             <Typography variant="caption" color="text.secondary">
@@ -261,23 +309,32 @@ export function InsightPanel({ insights, analysis }: InsightPanelProps) {
           </>
         )}
 
-        <Typography variant="caption" fontWeight={700} color="text.secondary">
+        <Typography variant="caption" fontWeight={700} sx={panelTitleSx}>
           Graph Intelligence
         </Typography>
         <Stack direction="row" spacing={0.6} flexWrap="wrap">
-          <Chip size="small" label={`Hubs: ${insights.graph.hubs.length}`} variant="outlined" />
-          <Chip size="small" label={`Cycles: ${insights.graph.cycleCount}`} variant="outlined" />
+          <Chip size="small" label={`Hubs: ${insights.graph.hubs.length}`} variant="outlined" sx={panelChipSx} />
+          <Chip size="small" label={`Cycles: ${insights.graph.cycleCount}`} variant="outlined" sx={panelChipSx} />
           <Chip
             size="small"
             label={`Layer violations: ${insights.graph.layerViolationCount}`}
             variant="outlined"
+            sx={panelChipSx}
           />
           <Chip
             size="small"
             label={`Graph density: ${Math.round(insights.graph.density * 100)}%`}
             variant="outlined"
+            sx={panelChipSx}
           />
         </Stack>
+        {insights.graph.hubs.length === 0 && (
+          <Box sx={panelEmptyStateSx}>
+            <Typography variant="caption" color="text.secondary">
+              No dominant hubs detected for this snapshot.
+            </Typography>
+          </Box>
+        )}
         {insights.graph.hubs.length > 0 && (
           <Stack spacing={0.35}>
             {insights.graph.hubs.slice(0, 4).map((hub) => (
@@ -326,7 +383,7 @@ export function InsightPanel({ insights, analysis }: InsightPanelProps) {
 
         <Divider />
 
-        <Typography variant="caption" fontWeight={700} color="text.secondary">
+        <Typography variant="caption" fontWeight={700} sx={panelTitleSx}>
           Top Authors (color = floors)
         </Typography>
         <Stack spacing={0.35}>
@@ -358,7 +415,7 @@ export function InsightPanel({ insights, analysis }: InsightPanelProps) {
 
         <Divider />
 
-        <Typography variant="caption" fontWeight={700} color="text.secondary">
+        <Typography variant="caption" fontWeight={700} sx={panelTitleSx}>
           Visual Legend
         </Typography>
         <Typography variant="caption" color="text.secondary">

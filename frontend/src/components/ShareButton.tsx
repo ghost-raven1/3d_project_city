@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import { Alert, Button, IconButton, Snackbar, Tooltip } from '@mui/material';
+import { alpha } from '@mui/material/styles';
+import { panelActionButtonSx } from './panelStyles';
 
 interface ShareButtonProps {
   repoUrl: string;
@@ -42,7 +44,19 @@ export function ShareButton({ repoUrl, compact = false }: ShareButtonProps) {
       {compact ? (
         <Tooltip title="Поделиться">
           <span>
-            <IconButton size="small" onClick={handleShare} disabled={!repoUrl}>
+            <IconButton
+              size="small"
+              onClick={handleShare}
+              disabled={!repoUrl}
+              sx={{
+                ...panelActionButtonSx,
+                border: `1px solid ${alpha('#84ddff', 0.34)}`,
+                backgroundColor: alpha('#0b2746', 0.52),
+                '&:hover': {
+                  backgroundColor: alpha('#13406a', 0.66),
+                },
+              }}
+            >
               <ContentCopyRoundedIcon fontSize="small" />
             </IconButton>
           </span>
@@ -53,6 +67,11 @@ export function ShareButton({ repoUrl, compact = false }: ShareButtonProps) {
           startIcon={<ContentCopyRoundedIcon />}
           onClick={handleShare}
           disabled={!repoUrl}
+          sx={{
+            ...panelActionButtonSx,
+            borderColor: alpha('#84ddff', 0.38),
+            backgroundColor: alpha('#0b2746', 0.42),
+          }}
         >
           Поделиться
         </Button>
@@ -71,6 +90,10 @@ export function ShareButton({ repoUrl, compact = false }: ShareButtonProps) {
         <Alert
           severity={feedback.severity}
           variant="filled"
+          sx={{
+            border: `1px solid ${alpha('#8fe7ff', 0.42)}`,
+            backdropFilter: 'blur(8px)',
+          }}
           onClose={() =>
             setFeedback((value) => ({
               ...value,

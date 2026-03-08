@@ -3,6 +3,11 @@ import { Text } from '@react-three/drei';
 import { ImportRoadSegment } from './types';
 import { ImportTraffic } from './ImportTraffic';
 import { createRoadTexture } from '../../utils/procedural-textures';
+import {
+  SCENE_HUD_OUTLINE_DARK,
+  SCENE_HUD_PANEL_LIGHT,
+  SCENE_HUD_PANEL_TEXT_DARK,
+} from './scene-hud-colors';
 
 interface RoadNetworkProps {
   segments: ImportRoadSegment[];
@@ -317,7 +322,7 @@ export const RoadNetwork = memo(function RoadNetwork({
           </mesh>
           <mesh position={[0, 0.021, 0]}>
             <boxGeometry args={[road.length * 0.95, 0.006, Math.max(0.025, road.width * 0.08)]} />
-            <meshStandardMaterial color="#ffffff" transparent opacity={0.28} />
+            <meshStandardMaterial color={SCENE_HUD_PANEL_LIGHT} transparent opacity={0.28} />
           </mesh>
         </group>
       ))}
@@ -336,7 +341,11 @@ export const RoadNetwork = memo(function RoadNetwork({
           </mesh>
           <mesh position={[0, 0.06, 0]}>
             <cylinderGeometry args={[0.06, 0.06, 0.12, 10]} />
-            <meshStandardMaterial color="#dce9ff" emissive="#dce9ff" emissiveIntensity={1.25} />
+            <meshStandardMaterial
+              color={SCENE_HUD_PANEL_LIGHT}
+              emissive={SCENE_HUD_PANEL_LIGHT}
+              emissiveIntensity={1.25}
+            />
           </mesh>
         </group>
       ))}
@@ -350,7 +359,7 @@ export const RoadNetwork = memo(function RoadNetwork({
           <mesh position={[0, 0, 0]}>
             <boxGeometry args={[Math.max(1.8, sign.label.length * 0.16), 0.22, 0.04]} />
             <meshStandardMaterial
-              color="#edf4ff"
+              color={SCENE_HUD_PANEL_LIGHT}
               emissive={accentColor}
               emissiveIntensity={0.12}
               transparent
@@ -360,11 +369,11 @@ export const RoadNetwork = memo(function RoadNetwork({
           <Text
             position={[0, 0.02, 0.03]}
             fontSize={0.12}
-            color="#2c4968"
+            color={SCENE_HUD_PANEL_TEXT_DARK}
             anchorX="center"
             anchorY="middle"
             outlineWidth={0.014}
-            outlineColor="#ffffff"
+            outlineColor={SCENE_HUD_OUTLINE_DARK}
             maxWidth={5}
           >
             {sign.label}

@@ -3,6 +3,7 @@ import { Text } from '@react-three/drei';
 import { BranchSignal } from '../../types/repository';
 import { stringToColor } from '../../utils/color';
 import { CityBounds } from './types';
+import { SCENE_HUD_OUTLINE_DARK } from './scene-hud-colors';
 
 interface BranchOrbitsProps {
   branches: BranchSignal[];
@@ -127,7 +128,7 @@ export const BranchOrbits = memo(function BranchOrbits({
               color={node.color}
               anchorX="left"
               anchorY="middle"
-              outlineColor="#ffffff"
+              outlineColor={SCENE_HUD_OUTLINE_DARK}
               outlineWidth={0.02}
             >
               {`${node.label} (${node.commits})`}

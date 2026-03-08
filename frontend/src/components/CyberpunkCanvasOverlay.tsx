@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
+import { UI_MOTION } from '../theme/motion';
 
 type OverlayMode = 'overview' | 'architecture' | 'risk' | 'stack';
 
@@ -283,9 +284,8 @@ export function CyberpunkCanvasOverlay({
         pointerEvents: 'none',
         zIndex: 3,
         opacity: enabled ? 1 : 0,
-        transition: 'opacity 220ms ease',
+        transition: `opacity ${UI_MOTION.overlayFadeMs}ms ${UI_MOTION.easeStandard}`,
       }}
     />
   );
 }
-

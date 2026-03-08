@@ -1,5 +1,39 @@
 :root {
-  font-family: 'Avenir Next', 'Segoe UI', sans-serif;
+  --font-display: 'Orbitron', 'Oxanium', 'Space Grotesk', 'Segoe UI', sans-serif;
+  --font-body: 'Oxanium', 'Space Grotesk', 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+  --bg-core: #040b16;
+  --bg-mid: #071424;
+  --bg-edge: #0a1b31;
+  --grid-line: rgb(96 156 214 / 13%);
+  --neon-cyan: #42e8ff;
+  --neon-teal: #56ffd5;
+  --neon-orange: #ff9a4a;
+  font-family: var(--font-body);
+}
+
+@keyframes city-bg-drift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.52;
+  }
+  50% {
+    transform: translate3d(2%, -1.5%, 0) scale(1.05);
+    opacity: 0.8;
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.52;
+  }
+}
+
+@keyframes city-grid-shift {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(40px, 40px, 0);
+  }
 }
 
 html,
@@ -11,8 +45,51 @@ body,
 }
 
 body {
+  position: relative;
+  overflow: hidden;
+  font-family: var(--font-body);
+  color: #e4f3ff;
   background:
-    radial-gradient(circle at 12% 16%, rgb(255 255 255 / 78%), transparent 42%),
-    radial-gradient(circle at 78% 30%, rgb(145 204 255 / 24%), transparent 35%),
-    linear-gradient(145deg, #e4f1ff 0%, #eff5fc 52%, #e3ecf7 100%);
+    radial-gradient(circle at 14% 12%, rgb(68 235 255 / 14%), transparent 34%),
+    radial-gradient(circle at 84% 18%, rgb(255 153 80 / 12%), transparent 36%),
+    radial-gradient(circle at 50% 88%, rgb(57 130 255 / 16%), transparent 44%),
+    linear-gradient(142deg, var(--bg-core) 0%, var(--bg-mid) 46%, var(--bg-edge) 100%);
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: -8%;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 16% 26%, rgb(77 239 255 / 20%), transparent 32%),
+    radial-gradient(circle at 82% 72%, rgb(73 151 255 / 16%), transparent 34%);
+  mix-blend-mode: screen;
+  filter: blur(42px);
+  animation: city-bg-drift 18s ease-in-out infinite;
+  z-index: 0;
+}
+
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 40px 40px;
+  opacity: 0.36;
+  animation: city-grid-shift 22s linear infinite;
+  z-index: 0;
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
 }

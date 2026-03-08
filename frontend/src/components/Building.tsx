@@ -14,6 +14,7 @@ import { stringToColor } from '../utils/color';
 import { BuildingMood } from '../utils/city';
 import { BuildingStyle, CityArchitecture } from '../utils/city-dna';
 import { DistrictArchetype } from '../utils/district-archetype';
+import { ConstructionWindow, PostFxQuality, SceneViewMode } from './scene/types';
 
 interface BuildingProps {
   file: PositionedFileHistory;
@@ -21,6 +22,7 @@ interface BuildingProps {
   districtArchetype: DistrictArchetype;
   accentColor: string;
   architecture: CityArchitecture;
+  viewMode: SceneViewMode;
   buildingStyle: BuildingStyle;
   skylineBoost: number;
   importance: number;
@@ -33,6 +35,8 @@ interface BuildingProps {
   showWeather: boolean;
   maxRenderedFloors: number;
   totalCommitCount: number;
+  performanceTier: PostFxQuality;
+  constructionWindow?: ConstructionWindow;
   constructionMode: boolean;
   constructionProgress: number;
   onHover: (path: string | null) => void;
@@ -44,12 +48,31 @@ function blendColors(colorA: string, colorB: string, factor: number): string {
   return `#${mixed.getHexString()}`;
 }
 
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function smoothstep01(value: number): number {
+  const x = clamp01(value);
+  return x * x * (3 - 2 * x);
+}
+
+function hashUnit(value: string): number {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 33 + value.charCodeAt(index)) | 0;
+  }
+
+  return (Math.abs(hash) % 1000) / 1000;
+}
+
 export const Building = memo(function Building({
   file,
   districtColor,
   districtArchetype,
   accentColor,
   architecture,
+  viewMode,
   buildingStyle,
   skylineBoost,
   importance,
@@ -62,6 +85,8 @@ export const Building = memo(function Building({
   showWeather,
   maxRenderedFloors,
   totalCommitCount,
+  performanceTier,
+  constructionWindow,
   constructionMode,
   constructionProgress,
   onHover,
@@ -76,9 +101,49 @@ export const Building = memo(function Building({
   const hotspotBeamRef = useRef<Group>(null);
   const riskAuraRef = useRef<Group>(null);
   const windowMaterialRefs = useRef<Array<MeshStandardMaterial | null>>([]);
+  const facadeEdgeMaterialRefs = useRef<Array<MeshStandardMaterial | null>>([]);
+  const modeMarkerMaterialRefs = useRef<Array<MeshStandardMaterial | null>>([]);
   const repairSparksRef = useRef<Group>(null);
+  const rooftopBeaconRef = useRef<Group>(null);
+  const modeSignatureRef = useRef<Group>(null);
   const revealProgressRef = useRef(1);
+  const revealSeedPathRef = useRef<string | null>(null);
+  const animationAccumulatorRef = useRef(0);
   const tempFloorObject = useMemo(() => new Object3D(), []);
+  const priorityVisual = isHovered || isSelected || isHotspot || riskScore > 0.62;
+  const detailScale = useMemo(() => {
+    if (performanceTier === 'high') {
+      return 1;
+    }
+    if (performanceTier === 'medium') {
+      return priorityVisual ? 0.9 : 0.68;
+    }
+    return priorityVisual ? 0.72 : 0.4;
+  }, [performanceTier, priorityVisual]);
+  const animationStep = useMemo(() => {
+    if (performanceTier === 'high') {
+      return 0;
+    }
+    if (performanceTier === 'medium') {
+      return 1 / 42;
+    }
+    return 1 / 24;
+  }, [performanceTier]);
+  const ringSegments = performanceTier === 'high' ? 30 : performanceTier === 'medium' ? 22 : 16;
+  const coneSegments = performanceTier === 'high' ? 14 : performanceTier === 'medium' ? 12 : 10;
+  const sphereSegments = performanceTier === 'high' ? 12 : performanceTier === 'medium' ? 10 : 8;
+  const weatherEffectsEnabled =
+    showWeather && (performanceTier === 'high' || priorityVisual || mood === 'storm');
+  const windowAnimationEnabled = performanceTier === 'high' || priorityVisual;
+  const facadeAnimationEnabled = performanceTier !== 'low' || priorityVisual;
+  const modeAnimationEnabled = performanceTier !== 'low' || priorityVisual;
+  const riskVisualThreshold =
+    performanceTier === 'high' ? 0.08 : performanceTier === 'medium' ? 0.2 : 0.34;
+  const showRiskAura = riskScore > riskVisualThreshold;
+  const showWindowPanels = performanceTier !== 'low' || priorityVisual || importance > 0.55;
+  const showFacadeStrips = performanceTier === 'high' || priorityVisual || importance > 0.66;
+  const showFacadeBands = performanceTier !== 'low' || priorityVisual;
+  const showRoofModules = performanceTier !== 'low' || priorityVisual || importance > 0.7;
 
   const materialPreset = useMemo(() => {
     const base =
@@ -196,19 +261,43 @@ export const Building = memo(function Building({
       return 1;
     }
 
-    const total = Math.max(1, totalCommitCount);
-    const localProgress = Math.min(1, file.commits.length / total);
-    const globalProgress = Math.min(1, Math.max(0, constructionProgress));
-    const blended = localProgress * 0.82 + globalProgress * 0.18;
-    return Math.min(1, Math.max(0.05, blended));
-  }, [constructionMode, constructionProgress, file.commits.length, totalCommitCount]);
+    const globalProgress = clamp01(constructionProgress);
+    const minimumWindow = 0.03;
+    let start = constructionWindow?.start;
+    let end = constructionWindow?.end;
+
+    if (start === undefined || end === undefined) {
+      const seed = hashUnit(file.path);
+      const commitSpan = Math.min(0.36, Math.log10(Math.max(2, totalCommitCount + 1)) * 0.22);
+      start = seed * 0.58;
+      end = Math.min(1, start + 0.2 + commitSpan);
+    }
+
+    const boundedStart = Math.min(clamp01(start), Math.max(0, 1 - minimumWindow));
+    const boundedEnd = Math.max(boundedStart + minimumWindow, clamp01(end));
+    const localProgress = (globalProgress - boundedStart) / Math.max(minimumWindow, boundedEnd - boundedStart);
+    const eased = smoothstep01(localProgress);
+    return Math.max(0.02, eased);
+  }, [
+    constructionMode,
+    constructionProgress,
+    constructionWindow?.end,
+    constructionWindow?.start,
+    file.path,
+    totalCommitCount,
+  ]);
 
   useEffect(() => {
     if (!constructionMode) {
       revealProgressRef.current = 1;
+      revealSeedPathRef.current = null;
       return;
     }
 
+    if (revealSeedPathRef.current === file.path) {
+      return;
+    }
+    revealSeedPathRef.current = file.path;
     revealProgressRef.current = Math.min(
       revealProgressRef.current,
       Math.max(0.08, targetReveal * 0.22),
@@ -231,7 +320,10 @@ export const Building = memo(function Building({
     return new Float32Array(positions);
   }, []);
 
-  const facadeBandCount = Math.min(7, Math.max(2, Math.floor(topY / 2.8)));
+  const facadeBandCount = useMemo(
+    () => Math.min(7, Math.max(1, Math.round((Math.floor(topY / 2.8) || 1) * detailScale))),
+    [detailScale, topY],
+  );
   const facadeBands = useMemo(() => {
     if (facadeBandCount <= 0) {
       return [] as number[];
@@ -243,7 +335,12 @@ export const Building = memo(function Building({
   }, [facadeBandCount, topY]);
 
   const windowPanels = useMemo(() => {
-    const count = Math.min(18, Math.max(6, Math.floor(topY * 1.35)));
+    const maxPanels = performanceTier === 'high' ? 18 : performanceTier === 'medium' ? 13 : 8;
+    const minPanels = performanceTier === 'low' ? 3 : 5;
+    const count = Math.min(
+      maxPanels,
+      Math.max(minPanels, Math.floor(topY * (1.35 * detailScale))),
+    );
     let seed = 0;
     for (let index = 0; index < file.path.length; index += 1) {
       seed = (seed * 31 + file.path.charCodeAt(index)) | 0;
@@ -267,7 +364,41 @@ export const Building = memo(function Building({
         height: 0.08 + unitC * 0.11,
       };
     });
+  }, [detailScale, file.path, floorDepth, floorWidth, performanceTier, topY]);
+  const facadeEdgeStrips = useMemo(() => {
+    const offsetX = floorWidth / 2 + 0.045;
+    const offsetZ = floorDepth / 2 + 0.045;
+    const stripHeight = Math.max(0.4, topY * 0.96);
+
+    return [
+      { id: `${file.path}-edge-0`, x: offsetX, z: offsetZ, rotate: false },
+      { id: `${file.path}-edge-1`, x: -offsetX, z: offsetZ, rotate: false },
+      { id: `${file.path}-edge-2`, x: offsetX, z: -offsetZ, rotate: false },
+      { id: `${file.path}-edge-3`, x: -offsetX, z: -offsetZ, rotate: false },
+      { id: `${file.path}-edge-4`, x: 0, z: offsetZ, rotate: true },
+      { id: `${file.path}-edge-5`, x: 0, z: -offsetZ, rotate: true },
+    ].map((item, index) => ({
+      ...item,
+      index,
+      stripHeight,
+    }));
   }, [file.path, floorDepth, floorWidth, topY]);
+  const rooftopModules = useMemo(() => {
+    const maxModules = performanceTier === 'high' ? 4 : performanceTier === 'medium' ? 3 : 2;
+    const modules = Math.min(maxModules, Math.max(1, Math.floor(importance * maxModules)));
+    const result: Array<{ id: string; x: number; z: number; h: number }> = [];
+    for (let index = 0; index < modules; index += 1) {
+      const angle = (index / modules) * Math.PI * 2 + (file.path.length % 7) * 0.2;
+      const radius = Math.max(0.18, Math.min(floorWidth, floorDepth) * 0.18);
+      result.push({
+        id: `${file.path}-roofmod-${index}`,
+        x: Math.cos(angle) * radius,
+        z: Math.sin(angle) * radius,
+        h: 0.12 + (index % 3) * 0.05,
+      });
+    }
+    return result;
+  }, [file.path, floorDepth, floorWidth, importance, performanceTier]);
 
   const latestCommit = file.commits[file.commits.length - 1] ?? null;
   const hologramLabel = useMemo(() => {
@@ -286,22 +417,44 @@ export const Building = memo(function Building({
     };
   }, [file.commits.length, file.totalChanges, latestCommit]);
 
-  useFrame(({ clock }) => {
+  useFrame(({ clock }, delta) => {
     const previousReveal = revealProgressRef.current;
-    const reveal = previousReveal + (targetReveal - previousReveal) * 0.09;
+    const blend = 1 - Math.exp(-delta * 6.2);
+    const reveal = previousReveal + (targetReveal - previousReveal) * blend;
     revealProgressRef.current = reveal;
     const easedReveal = 1 - (1 - reveal) * (1 - reveal);
     if (rootRef.current) {
-      const scaleY = 0.1 + easedReveal * 0.9;
+      const scaleY = 0.03 + easedReveal * 0.97;
       rootRef.current.scale.y = scaleY;
     }
     if (floorMaterialRef.current) {
-      floorMaterialRef.current.opacity = 0.2 + easedReveal * 0.8;
+      floorMaterialRef.current.opacity = 0.12 + easedReveal * 0.88;
       floorMaterialRef.current.transparent = floorMaterialRef.current.opacity < 0.99;
       floorMaterialRef.current.depthWrite = floorMaterialRef.current.opacity >= 0.99;
     }
+    const revealSettled =
+      Math.abs(targetReveal - revealProgressRef.current) < 0.001 && !constructionMode;
+    const hasDynamicNeed =
+      weatherEffectsEnabled ||
+      isHovered ||
+      isSelected ||
+      isHotspot ||
+      showRiskAura ||
+      windowAnimationEnabled ||
+      facadeAnimationEnabled ||
+      modeAnimationEnabled;
+    if (revealSettled && !hasDynamicNeed) {
+      return;
+    }
+    if (animationStep > 0) {
+      animationAccumulatorRef.current += delta;
+      if (animationAccumulatorRef.current < animationStep) {
+        return;
+      }
+      animationAccumulatorRef.current = 0;
+    }
 
-    if (weatherGroupRef.current && showWeather) {
+    if (weatherGroupRef.current && weatherEffectsEnabled) {
       weatherGroupRef.current.position.y = topY + 1.1 + Math.sin(clock.elapsedTime * 2.5) * 0.12;
       weatherGroupRef.current.rotation.y += 0.0015;
     }
@@ -322,27 +475,117 @@ export const Building = memo(function Building({
       hotspotBeamRef.current.scale.set(beamScale, 1, beamScale);
     }
 
-    if (riskAuraRef.current && riskScore > 0.08) {
+    if (riskAuraRef.current && showRiskAura) {
       const pulse = 1 + Math.sin(clock.elapsedTime * (2.8 + riskScore * 4.5)) * (0.04 + riskScore * 0.1);
       riskAuraRef.current.scale.set(pulse, 1, pulse);
       riskAuraRef.current.position.y = 0.08 + Math.sin(clock.elapsedTime * 1.7) * 0.015;
     }
 
-    windowMaterialRefs.current.forEach((material, index) => {
-      if (!material) {
-        return;
-      }
+    if (windowAnimationEnabled) {
+      windowMaterialRefs.current.forEach((material, index) => {
+        if (!material) {
+          return;
+        }
+        const blink =
+          0.25 +
+          Math.max(0, Math.sin(clock.elapsedTime * (2.1 + (index % 5) * 0.28) + index)) * 0.9;
+        material.emissiveIntensity = blink * (0.5 + importance * 0.9);
+        material.opacity = 0.24 + blink * 0.28;
+      });
+    }
 
-      const blink = 0.25 + Math.max(0, Math.sin(clock.elapsedTime * (2.1 + (index % 5) * 0.28) + index)) * 0.9;
-      material.emissiveIntensity = blink * (0.5 + importance * 0.9);
-      material.opacity = 0.24 + blink * 0.28;
-    });
+    if (facadeAnimationEnabled) {
+      facadeEdgeMaterialRefs.current.forEach((material, index) => {
+        if (!material) {
+          return;
+        }
+        const pulse = 0.38 + Math.max(0, Math.sin(clock.elapsedTime * 2.4 + index * 0.9)) * 0.95;
+        material.emissiveIntensity = pulse * (0.35 + importance * 0.8);
+        material.opacity = 0.2 + pulse * 0.2;
+      });
+    }
 
     if (repairSparksRef.current && mood === 'storm') {
       repairSparksRef.current.rotation.y += 0.035;
       repairSparksRef.current.position.y = topY + 0.86 + Math.sin(clock.elapsedTime * 6) * 0.08;
     }
+
+    if (rooftopBeaconRef.current) {
+      const scale = 1 + Math.sin(clock.elapsedTime * 3.6) * 0.1;
+      rooftopBeaconRef.current.scale.set(scale, 1, scale);
+      rooftopBeaconRef.current.position.y = topY + 0.24 + Math.sin(clock.elapsedTime * 2.1) * 0.03;
+    }
+
+    if (modeSignatureRef.current && modeAnimationEnabled) {
+      modeSignatureRef.current.rotation.y +=
+        viewMode === 'architecture'
+          ? 0.012
+          : viewMode === 'risk'
+            ? 0.006
+            : viewMode === 'stack'
+              ? 0.009
+              : 0.004;
+    }
+
+    if (modeAnimationEnabled) {
+      modeMarkerMaterialRefs.current.forEach((material, index) => {
+        if (!material) {
+          return;
+        }
+        const wave = 0.35 + Math.max(0, Math.sin(clock.elapsedTime * 2.6 + index * 0.8));
+        material.emissiveIntensity =
+          wave *
+          (viewMode === 'risk'
+            ? 1.15
+            : viewMode === 'architecture'
+              ? 0.9
+              : viewMode === 'stack'
+                ? 0.82
+                : 0.7);
+        material.opacity = 0.18 + wave * 0.18;
+      });
+    }
   });
+
+  useEffect(() => {
+    if (windowAnimationEnabled) {
+      return;
+    }
+    windowMaterialRefs.current.forEach((material) => {
+      if (!material) {
+        return;
+      }
+      material.emissiveIntensity = 0.46 + importance * 0.42;
+      material.opacity = 0.26 + importance * 0.16;
+    });
+  }, [importance, windowAnimationEnabled]);
+
+  useEffect(() => {
+    if (facadeAnimationEnabled) {
+      return;
+    }
+    facadeEdgeMaterialRefs.current.forEach((material) => {
+      if (!material) {
+        return;
+      }
+      material.emissiveIntensity = 0.3 + importance * 0.4;
+      material.opacity = 0.2 + importance * 0.1;
+    });
+  }, [facadeAnimationEnabled, importance]);
+
+  useEffect(() => {
+    if (modeAnimationEnabled) {
+      return;
+    }
+    modeMarkerMaterialRefs.current.forEach((material) => {
+      if (!material) {
+        return;
+      }
+      material.emissiveIntensity =
+        viewMode === 'risk' ? 0.85 : viewMode === 'architecture' ? 0.64 : viewMode === 'stack' ? 0.58 : 0.5;
+      material.opacity = 0.24;
+    });
+  }, [modeAnimationEnabled, viewMode]);
 
   const emissiveIntensity =
     (isHovered || isSelected ? 0.24 : 0.08) +
@@ -353,6 +596,14 @@ export const Building = memo(function Building({
     Math.min(2.8, (topY * 0.18 + 0.35) * (0.92 + importance * 0.45 * skylineBoost)),
   );
   const riskColor = riskScore >= 0.55 ? '#ff5b73' : riskScore >= 0.3 ? '#ffb25d' : '#ffd86c';
+  const modeAccent =
+    viewMode === 'risk'
+      ? blendColors(accentColor, '#ff6f84', 0.55)
+      : viewMode === 'stack'
+        ? blendColors(accentColor, '#8fb6ff', 0.6)
+        : viewMode === 'architecture'
+          ? blendColors(accentColor, '#78f2ff', 0.6)
+          : accentColor;
 
   return (
     <group ref={rootRef} position={[file.x, 0, file.z]}>
@@ -393,7 +644,8 @@ export const Building = memo(function Building({
         />
       </instancedMesh>
 
-      {facadeBands.map((y, index) => (
+      {showFacadeBands &&
+        facadeBands.map((y, index) => (
         <group key={`${file.path}-band-${index}`} position={[0, y, 0]}>
           <mesh position={[floorWidth / 2 + 0.03, 0, 0]}>
             <boxGeometry args={[0.05, 0.08, Math.max(0.2, floorDepth * 0.36)]} />
@@ -418,7 +670,40 @@ export const Building = memo(function Building({
         </group>
       ))}
 
-      {windowPanels.map((panel, index) => (
+      {showFacadeStrips &&
+        facadeEdgeStrips.map((strip) => (
+        <mesh
+          key={strip.id}
+          position={[
+            strip.x,
+            strip.stripHeight / 2 + 0.05,
+            strip.z,
+          ]}
+          rotation={strip.rotate ? [0, Math.PI / 2, 0] : [0, 0, 0]}
+        >
+          <boxGeometry
+            args={[
+              strip.rotate ? Math.max(0.24, floorDepth * 0.64) : 0.035,
+              strip.stripHeight,
+              strip.rotate ? 0.035 : Math.max(0.24, floorWidth * 0.64),
+            ]}
+          />
+          <meshStandardMaterial
+            ref={(node) => {
+              facadeEdgeMaterialRefs.current[strip.index] = node;
+            }}
+            color={accentColor}
+            emissive={accentColor}
+            transparent
+            opacity={0.28}
+            metalness={0.2}
+            roughness={0.4}
+          />
+        </mesh>
+      ))}
+
+      {showWindowPanels &&
+        windowPanels.map((panel, index) => (
         <mesh key={panel.id} position={[panel.x, panel.y, panel.z]}>
           <planeGeometry args={[panel.width, panel.height]} />
           <meshStandardMaterial
@@ -444,7 +729,7 @@ export const Building = memo(function Building({
 
       {buildingStyle.roofStyle === 'spire' && (
         <mesh position={[0, topY + roofHeight / 2, 0]} castShadow>
-          <coneGeometry args={[Math.max(0.24, floorWidth * 0.24), roofHeight, 14]} />
+          <coneGeometry args={[Math.max(0.24, floorWidth * 0.24), roofHeight, coneSegments]} />
           <meshStandardMaterial color={accentColor} metalness={0.5} roughness={0.36} />
         </mesh>
       )}
@@ -454,8 +739,8 @@ export const Building = memo(function Building({
           <sphereGeometry
             args={[
               Math.max(0.3, Math.min(floorWidth, floorDepth) * 0.28),
-              18,
-              14,
+              sphereSegments + 6,
+              sphereSegments + 2,
               0,
               Math.PI * 2,
               0,
@@ -471,6 +756,129 @@ export const Building = memo(function Building({
           <cylinderGeometry args={[floorWidth * 0.38, floorWidth * 0.44, 0.22, 16]} />
           <meshStandardMaterial color={accentColor} metalness={0.28} roughness={0.48} />
         </mesh>
+      )}
+
+      {showRoofModules &&
+        rooftopModules.map((module) => (
+        <mesh
+          key={module.id}
+          position={[module.x, topY + 0.14 + module.h / 2, module.z]}
+          castShadow
+        >
+          <boxGeometry args={[0.12, module.h, 0.12]} />
+          <meshStandardMaterial
+            color="#dbe8fb"
+            emissive={accentColor}
+            emissiveIntensity={0.36 + importance * 0.42}
+            metalness={0.42}
+            roughness={0.34}
+          />
+        </mesh>
+      ))}
+
+      <group ref={rooftopBeaconRef} position={[0, topY + 0.24, 0]}>
+        <mesh>
+          <sphereGeometry args={[0.07, sphereSegments, sphereSegments]} />
+          <meshStandardMaterial
+            color={accentColor}
+            emissive={accentColor}
+            emissiveIntensity={1.2}
+            metalness={0.14}
+            roughness={0.36}
+          />
+        </mesh>
+        <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, -0.07, 0]}>
+          <ringGeometry args={[0.12, 0.19, 20]} />
+          <meshStandardMaterial
+            color="#f5fbff"
+            emissive="#f5fbff"
+            emissiveIntensity={0.95}
+            transparent
+            opacity={0.72}
+          />
+        </mesh>
+      </group>
+
+      {viewMode === 'architecture' && (
+        <group ref={modeSignatureRef}>
+          <mesh position={[0, topY * 0.5 + 0.04, 0]}>
+            <boxGeometry args={[floorWidth * 1.12, Math.max(0.9, topY * 1.02), floorDepth * 1.12]} />
+            <meshStandardMaterial
+              ref={(node) => {
+                modeMarkerMaterialRefs.current[0] = node;
+              }}
+              color={modeAccent}
+              emissive={modeAccent}
+              transparent
+              opacity={0.2}
+              wireframe
+            />
+          </mesh>
+          <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, topY + 0.3, 0]}>
+            <ringGeometry args={[0.56, 0.79, ringSegments]} />
+            <meshStandardMaterial
+              ref={(node) => {
+                modeMarkerMaterialRefs.current[1] = node;
+              }}
+              color={modeAccent}
+              emissive={modeAccent}
+              transparent
+              opacity={0.2}
+            />
+          </mesh>
+        </group>
+      )}
+
+      {viewMode === 'risk' && showRiskAura && (
+        <group ref={modeSignatureRef}>
+          <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 0.09, 0]}>
+            <ringGeometry args={[0.8, 1.08 + riskScore * 0.28, ringSegments]} />
+            <meshStandardMaterial
+              ref={(node) => {
+                modeMarkerMaterialRefs.current[2] = node;
+              }}
+              color={riskColor}
+              emissive={riskColor}
+              transparent
+              opacity={0.26}
+            />
+          </mesh>
+          <mesh position={[0, topY + 0.48, 0]}>
+            <coneGeometry args={[0.16, 0.24, 3]} />
+            <meshStandardMaterial
+              ref={(node) => {
+                modeMarkerMaterialRefs.current[3] = node;
+              }}
+              color={riskColor}
+              emissive={riskColor}
+              transparent
+              opacity={0.36}
+            />
+          </mesh>
+        </group>
+      )}
+
+      {viewMode === 'stack' && (
+        <group ref={modeSignatureRef}>
+          {[0.26, 0.52, 0.78].map((ratio, index) => (
+            <mesh
+              key={`${file.path}-stack-ring-${index}`}
+              rotation={[Math.PI / 2, 0, 0]}
+              position={[0, Math.max(0.22, topY * ratio), 0]}
+            >
+              <ringGeometry args={[0.46 + index * 0.06, 0.58 + index * 0.06, ringSegments - 4]} />
+              <meshStandardMaterial
+                ref={(node) => {
+                  modeMarkerMaterialRefs.current[4 + index] = node;
+                }}
+                color={modeAccent}
+                emissive={modeAccent}
+                transparent
+                opacity={0.24}
+              />
+            </mesh>
+          ))}
+        </group>
       )}
 
       {isHotspot && (
@@ -525,8 +933,8 @@ export const Building = memo(function Building({
 
       {(isHovered || isSelected) && (
         <group ref={hoverRingRef} position={[0, topY + 0.2, 0]}>
-          <mesh rotation={[Math.PI / 2, 0, 0]}>
-            <ringGeometry args={[0.62, 0.82, 26]} />
+            <mesh rotation={[Math.PI / 2, 0, 0]}>
+            <ringGeometry args={[0.62, 0.82, ringSegments - 2]} />
             <meshStandardMaterial
               color={accentColor}
               emissive={accentColor}
@@ -538,10 +946,10 @@ export const Building = memo(function Building({
         </group>
       )}
 
-      {riskScore > 0.08 && (
+      {showRiskAura && (
         <group ref={riskAuraRef}>
           <mesh rotation={[Math.PI / 2, 0, 0]}>
-            <ringGeometry args={[0.68, 0.95 + riskScore * 0.38, 32]} />
+            <ringGeometry args={[0.68, 0.95 + riskScore * 0.38, ringSegments]} />
             <meshStandardMaterial
               color={riskColor}
               emissive={riskColor}
@@ -556,7 +964,7 @@ export const Building = memo(function Building({
                 Math.max(floorWidth, floorDepth) * 0.45,
                 Math.max(floorWidth, floorDepth) * 0.54,
                 Math.max(1.1, topY * 0.78),
-                16,
+                coneSegments + 2,
                 1,
                 true,
               ]}
@@ -582,7 +990,7 @@ export const Building = memo(function Building({
         />
       </mesh>
 
-      {showWeather && (
+      {weatherEffectsEnabled && (
         <group ref={weatherGroupRef}>
           {mood === 'rain' && (
             <lineSegments>
@@ -596,7 +1004,7 @@ export const Building = memo(function Building({
           {mood === 'storm' && (
             <>
               <mesh rotation={[Math.PI / 2, 0, 0]}>
-                <ringGeometry args={[0.7, 1.16, 28]} />
+                <ringGeometry args={[0.7, 1.16, ringSegments]} />
                 <meshStandardMaterial
                   ref={stormMaterialRef}
                   color={accentColor}
@@ -607,7 +1015,7 @@ export const Building = memo(function Building({
               </mesh>
               <group ref={repairSparksRef}>
                 <mesh>
-                  <sphereGeometry args={[0.06, 8, 8]} />
+                  <sphereGeometry args={[0.06, sphereSegments, sphereSegments]} />
                   <meshStandardMaterial
                     color="#f0f7ff"
                     emissive="#f0f7ff"
@@ -615,7 +1023,7 @@ export const Building = memo(function Building({
                   />
                 </mesh>
                 <mesh position={[0.14, 0.03, -0.06]}>
-                  <sphereGeometry args={[0.035, 8, 8]} />
+                  <sphereGeometry args={[0.035, sphereSegments, sphereSegments]} />
                   <meshStandardMaterial
                     color={accentColor}
                     emissive={accentColor}
@@ -628,7 +1036,7 @@ export const Building = memo(function Building({
 
           {mood === 'sun' && (
             <mesh rotation={[Math.PI / 2, 0, 0]}>
-              <ringGeometry args={[0.68, 1.1, 28]} />
+              <ringGeometry args={[0.68, 1.1, ringSegments]} />
               <meshStandardMaterial
                 color="#ffd96a"
                 emissive="#ffd96a"

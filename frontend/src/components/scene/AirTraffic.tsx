@@ -1,13 +1,20 @@
 import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Group } from 'three';
-import { CityBounds } from './types';
+import { BuildingFootprint, CityBounds } from './types';
+import {
+  clampPointToCityBounds,
+  ensureAltitudeOverFootprints,
+  resolvePairwiseRepulsion,
+} from './collision-utils';
 
 interface AirTrafficProps {
   enabled: boolean;
   cityBounds: CityBounds;
+  buildingFootprints?: BuildingFootprint[];
   color: string;
   seed: number;
+  density?: number;
 }
 
 interface Lane {
@@ -18,11 +25,22 @@ interface Lane {
   phase: number;
 }
 
-export function AirTraffic({ enabled, cityBounds, color, seed }: AirTrafficProps) {
+export function AirTraffic({
+  enabled,
+  cityBounds,
+  buildingFootprints = [],
+  color,
+  seed,
+  density = 1,
+}: AirTrafficProps) {
   const refs = useRef<Array<Group | null>>([]);
+  const desiredPositionsRef = useRef<
+    Array<{ x: number; y: number; z: number; rotationY: number }>
+  >([]);
 
   const lanes = useMemo<Lane[]>(() => {
-    const count = 16;
+    const normalizedDensity = Math.max(0.3, density);
+    const count = Math.max(6, Math.min(32, Math.round(16 * normalizedDensity)));
 
     return Array.from({ length: count }, (_, index) => {
       const layer = (index % 4) + 1;
@@ -34,7 +52,7 @@ export function AirTraffic({ enabled, cityBounds, color, seed }: AirTrafficProps
         phase: (index / count) * Math.PI * 2 + (seed % 43) * 0.02,
       };
     });
-  }, [cityBounds.size, seed]);
+  }, [cityBounds.size, density, seed]);
 
   useFrame(({ clock }) => {
     if (!enabled) {
@@ -42,19 +60,56 @@ export function AirTraffic({ enabled, cityBounds, color, seed }: AirTrafficProps
     }
 
     const t = clock.elapsedTime;
-    refs.current.forEach((node, index) => {
+    const desired = desiredPositionsRef.current;
+    refs.current.forEach((_, index) => {
       const lane = lanes[index];
-      if (!node || !lane) {
+      if (!lane) {
         return;
       }
 
       const angle = t * lane.speed + lane.phase;
-      node.position.set(
-        cityBounds.centerX + Math.cos(angle) * lane.radiusX,
+      const slot = desired[index] ?? {
+        x: cityBounds.centerX,
+        y: lane.height,
+        z: cityBounds.centerZ,
+        rotationY: 0,
+      };
+      slot.x = cityBounds.centerX + Math.cos(angle) * lane.radiusX;
+      slot.z = cityBounds.centerZ + Math.sin(angle) * lane.radiusZ;
+      slot.y = ensureAltitudeOverFootprints(
+        slot.x,
+        slot.z,
         lane.height + Math.sin(t * 2.1 + index) * 0.16,
-        cityBounds.centerZ + Math.sin(angle) * lane.radiusZ,
+        buildingFootprints,
+        0.14,
+        1.35 + (index % 3) * 0.18,
       );
-      node.rotation.y = angle + Math.PI / 2;
+      slot.rotationY = angle + Math.PI / 2;
+      desired[index] = slot;
+    });
+
+    desired.length = lanes.length;
+    resolvePairwiseRepulsion(desired, 0.58, 0.52);
+    desired.forEach((point) => {
+      clampPointToCityBounds(point, cityBounds, 1.2);
+      point.y = ensureAltitudeOverFootprints(
+        point.x,
+        point.z,
+        point.y,
+        buildingFootprints,
+        0.14,
+        1.32,
+      );
+    });
+
+    refs.current.forEach((node, index) => {
+      const point = desired[index];
+      if (!node || !point) {
+        return;
+      }
+
+      node.position.set(point.x, point.y, point.z);
+      node.rotation.y = point.rotationY;
     });
   });
 

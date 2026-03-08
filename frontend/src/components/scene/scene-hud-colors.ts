@@ -1,0 +1,9 @@
+export const SCENE_HUD_TEXT_PRIMARY = '#def5ff';
+export const SCENE_HUD_TEXT_SECONDARY = '#a9d7ff';
+export const SCENE_HUD_TEXT_MUTED = '#8db8d8';
+export const SCENE_HUD_OUTLINE_DARK = '#061426';
+export const SCENE_HUD_OUTLINE_SOFT = '#102744';
+export const SCENE_HUD_PANEL_LIGHT = '#d4ebff';
+export const SCENE_HUD_PANEL_LIGHT_ALT = '#c1e0ff';
+export const SCENE_HUD_PANEL_TEXT_DARK = '#143356';
+export const SCENE_HUD_GLOW_WHITE = '#e9f7ff';

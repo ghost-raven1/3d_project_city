@@ -20,10 +20,22 @@ import { useMemo } from 'react';
 import { PositionedFileHistory } from '../types/repository';
 import { classifyBuildingMood } from '../utils/city';
 import { FileRiskProfile, riskBand } from '../utils/risk';
+import {
+  panelChipSx,
+  panelEmptyStateSx,
+  panelInsetSx,
+  panelScrollSx,
+  panelSurfaceSx,
+  panelTitleSx,
+} from './panelStyles';
 
 interface FileInfoCardProps {
   file: PositionedFileHistory;
   riskProfile: FileRiskProfile | null;
+  desktopTop?: number;
+  desktopRight?: number;
+  mobileTop?: number;
+  mobileBottomInset?: number;
   onClose: () => void;
 }
 
@@ -39,9 +51,20 @@ const moodColorMap: Record<ReturnType<typeof classifyBuildingMood>, 'warning' | 
   sun: 'success',
 };
 
-export function FileInfoCard({ file, riskProfile, onClose }: FileInfoCardProps) {
+export function FileInfoCard({
+  file,
+  riskProfile,
+  desktopTop = 118,
+  desktopRight = 20,
+  mobileTop = 88,
+  mobileBottomInset = 8,
+  onClose,
+}: FileInfoCardProps) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  const safeMobileTop = Math.max(72, Math.round(mobileTop));
+  const safeMobileBottomInset = Math.max(0, Math.round(mobileBottomInset));
+  const mobileMaxHeight = `max(220px, calc(100vh - ${safeMobileTop + safeMobileBottomInset}px))`;
 
   const authorStats = useMemo(() => {
     const map = new Map<string, number>();
@@ -75,23 +98,26 @@ export function FileInfoCard({ file, riskProfile, onClose }: FileInfoCardProps) 
     <Card
       sx={{
         position: 'absolute',
-        top: isMobile ? 'auto' : 118,
-        right: isMobile ? 8 : 20,
+        top: isMobile ? safeMobileTop : desktopTop,
+        right: isMobile ? 8 : desktopRight,
         left: isMobile ? 8 : 'auto',
-        bottom: isMobile ? 8 : 'auto',
+        bottom: 'auto',
         width: isMobile ? 'auto' : 400,
-        maxHeight: isMobile ? '48vh' : '70vh',
+        maxHeight: isMobile ? mobileMaxHeight : '70vh',
         overflow: 'auto',
         zIndex: 12,
-        backgroundColor: 'rgba(255,255,255,0.94)',
-        backdropFilter: 'blur(6px)',
+        ...panelSurfaceSx,
+        ...panelScrollSx,
       }}
       elevation={4}
     >
       <CardContent>
         <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1}>
-          <Typography variant="h6" sx={{ pr: 2 }}>
-            File Details
+          <Typography
+            variant="h6"
+            sx={{ pr: 2, ...panelTitleSx }}
+          >
+            Node Dossier
           </Typography>
           <IconButton size="small" onClick={onClose}>
             <CloseRoundedIcon fontSize="small" />
@@ -108,29 +134,49 @@ export function FileInfoCard({ file, riskProfile, onClose }: FileInfoCardProps) 
             color={moodColorMap[mood]}
             variant="filled"
             label={moodLabelMap[mood]}
+            sx={panelChipSx}
           />
           <Chip
             size="small"
             color={riskLabel === 'high' ? 'error' : riskLabel === 'medium' ? 'warning' : 'success'}
             variant="outlined"
             label={`Risk ${Math.round(risk * 100)}%`}
+            sx={panelChipSx}
           />
         </Stack>
 
         <Stack direction="row" spacing={2} mb={1}>
-          <Box>
+          <Box
+            sx={{
+              ...panelInsetSx,
+              px: 0.75,
+              py: 0.55,
+            }}
+          >
             <Typography variant="caption" color="text.secondary">
               Commits
             </Typography>
             <Typography fontWeight={700}>{file.commits.length}</Typography>
           </Box>
-          <Box>
+          <Box
+            sx={{
+              ...panelInsetSx,
+              px: 0.75,
+              py: 0.55,
+            }}
+          >
             <Typography variant="caption" color="text.secondary">
               + Additions
             </Typography>
             <Typography fontWeight={700}>{file.totalAdditions}</Typography>
           </Box>
-          <Box>
+          <Box
+            sx={{
+              ...panelInsetSx,
+              px: 0.75,
+              py: 0.55,
+            }}
+          >
             <Typography variant="caption" color="text.secondary">
               - Deletions
             </Typography>
@@ -140,7 +186,9 @@ export function FileInfoCard({ file, riskProfile, onClose }: FileInfoCardProps) 
 
         {latestCommit && (
           <Box mb={1.5}>
-            <Typography variant="subtitle2">Latest commit</Typography>
+            <Typography variant="subtitle2" sx={panelTitleSx}>
+              Latest commit
+            </Typography>
             <Typography variant="caption" color="text.secondary">
               {new Date(latestCommit.date).toLocaleString()} • {latestCommit.author}
             </Typography>
@@ -152,7 +200,9 @@ export function FileInfoCard({ file, riskProfile, onClose }: FileInfoCardProps) 
 
         {activityTimeline.length > 1 && (
           <Box mb={1.5}>
-            <Typography variant="subtitle2">Activity timeline</Typography>
+            <Typography variant="subtitle2" sx={panelTitleSx}>
+              Activity timeline
+            </Typography>
             <Stack direction="row" spacing={0.35} alignItems="flex-end" sx={{ height: 44, mt: 0.7 }}>
               {activityTimeline.map((point) => (
                 <Box
@@ -162,7 +212,7 @@ export function FileInfoCard({ file, riskProfile, onClose }: FileInfoCardProps) 
                     width: 6,
                     borderRadius: '6px 6px 2px 2px',
                     height: 8 + point.intensity * 32,
-                    backgroundColor: point.isBugfix ? '#ff7f96' : '#6ea8ff',
+                    backgroundColor: point.isBugfix ? '#ff8aa8' : '#68e9ff',
                     opacity: 0.68 + point.intensity * 0.3,
                   }}
                 />
@@ -178,7 +228,9 @@ export function FileInfoCard({ file, riskProfile, onClose }: FileInfoCardProps) 
 
         {riskProfile && (
           <Box mb={1.2}>
-            <Typography variant="subtitle2">Risk profile</Typography>
+            <Typography variant="subtitle2" sx={panelTitleSx}>
+              Risk profile
+            </Typography>
             <Typography variant="caption" color="text.secondary">
               churn {Math.round(riskProfile.churn * 100)}% • bugfix{' '}
               {Math.round(riskProfile.bugfixRatio * 100)}% • low bus factor{' '}
@@ -192,26 +244,57 @@ export function FileInfoCard({ file, riskProfile, onClose }: FileInfoCardProps) 
 
         <Divider sx={{ my: 1.5 }} />
 
-        <Typography variant="subtitle2" mb={1}>
+        <Typography variant="subtitle2" mb={1} sx={panelTitleSx}>
           Authors
         </Typography>
 
-        <Table size="small" aria-label="authors table">
-          <TableHead>
-            <TableRow>
-              <TableCell>Author</TableCell>
-              <TableCell align="right">Commits</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {authorStats.map(([author, commits]) => (
-              <TableRow key={author}>
-                <TableCell>{author}</TableCell>
-                <TableCell align="right">{commits}</TableCell>
+        {authorStats.length === 0 ? (
+          <Box sx={panelEmptyStateSx}>
+            <Typography variant="caption" color="text.secondary">
+              No author stats available for this node.
+            </Typography>
+          </Box>
+        ) : (
+          <Table size="small" aria-label="authors table">
+            <TableHead>
+              <TableRow>
+                <TableCell
+                  sx={{
+                    borderColor: 'rgba(112, 172, 224, 0.22)',
+                    color: '#a8f0ff',
+                    letterSpacing: '0.05em',
+                    textTransform: 'uppercase',
+                    fontSize: 11,
+                  }}
+                >
+                  Author
+                </TableCell>
+                <TableCell
+                  align="right"
+                  sx={{
+                    borderColor: 'rgba(112, 172, 224, 0.22)',
+                    color: '#a8f0ff',
+                    letterSpacing: '0.05em',
+                    textTransform: 'uppercase',
+                    fontSize: 11,
+                  }}
+                >
+                  Commits
+                </TableCell>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHead>
+            <TableBody>
+              {authorStats.map(([author, commits]) => (
+                <TableRow key={author}>
+                  <TableCell sx={{ borderColor: 'rgba(112, 172, 224, 0.22)' }}>{author}</TableCell>
+                  <TableCell sx={{ borderColor: 'rgba(112, 172, 224, 0.22)' }} align="right">
+                    {commits}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
       </CardContent>
     </Card>
   );

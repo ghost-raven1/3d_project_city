@@ -1,17 +1,18 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Box, Paper, Typography } from '@mui/material';
-import { BranchTreePanel } from './components/BranchTreePanel';
-import { CyberpunkCanvasOverlay } from './components/CyberpunkCanvasOverlay';
-import { FileInfoCard } from './components/FileInfoCard';
-import { InsightPanel } from './components/InsightPanel';
-import { Minimap } from './components/Minimap';
-import { Scene3D } from './components/Scene3D';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Box } from '@mui/material';
+import { AppOverlayLayer } from './components/AppOverlayLayer';
+import { ProductEmptyState } from './components/ProductEmptyState';
+import { ProgressBar } from './components/ProgressBar';
 import { TopControlPanel } from './components/TopControlPanel';
+import { ConstructionWindow, ScenePerformanceTelemetry } from './components/scene/types';
+import { useCollaboration } from './hooks/useCollaboration';
+import { useNarrator } from './hooks/useNarrator';
+import { useScenePreferences } from './hooks/useScenePreferences';
+import { useTimelinePlayback } from './hooks/useTimelinePlayback';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useRepoStore } from './store/useRepoStore';
-import { RepositoryResult } from './types/repository';
+import { NarratorManualCue, NarratorUiAction } from './types/narrator';
 import { createCityDNA } from './utils/city-dna';
-import { getTimelineBounds } from './utils/city';
 import {
   deriveBranchSignals,
   extractBranchNamesFromMessage,
@@ -21,6 +22,19 @@ import { analyzeRepositoryInsights } from './utils/insights';
 import { getLanguageFromPath } from './utils/language';
 import { buildFileRiskMap, riskBand } from './utils/risk';
 import { buildSnapshot } from './utils/snapshot';
+
+const Scene3DLazy = lazy(async () => {
+  const module = await import('./components/Scene3D');
+  return { default: module.Scene3D };
+});
+
+const DEFAULT_SCENE_PERFORMANCE: ScenePerformanceTelemetry = {
+  fps: 0,
+  runtimeProfile: 'cinematic',
+  postFxQuality: 'high',
+  adaptiveDpr: 1.45,
+  adaptiveLoadScale: 1,
+};
 
 function topDistrict(folder: string): string {
   if (!folder || folder === 'root') {
@@ -53,81 +67,89 @@ function downloadBlob(filename: string, blob: Blob): void {
   URL.revokeObjectURL(url);
 }
 
-function collectTimelineFrames(data: RepositoryResult | null): number[] {
-  if (!data) {
-    return [];
+function extractNarratorQuestionFromChat(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return null;
   }
 
-  const frames = new Set<number>();
-  data.files.forEach((file) => {
-    file.commits.forEach((commit) => {
-      const ts = new Date(commit.date).getTime();
-      if (!Number.isNaN(ts)) {
-        frames.add(ts);
-      }
-    });
-  });
+  const patterns = [
+    /^\/(?:ask|narrator)\s+(.+)$/i,
+    /^@narrator[\s,:-]+(.+)$/i,
+    /^(?:рассказчик|нарратор)[\s,:-]+(.+)$/i,
+  ];
 
-  return Array.from(frames).sort((a, b) => a - b);
+  for (const pattern of patterns) {
+    const match = trimmed.match(pattern);
+    if (!match) {
+      continue;
+    }
+
+    const question = (match[1] ?? '').trim();
+    if (question) {
+      return question.slice(0, 320);
+    }
+  }
+
+  return null;
 }
 
-function findFrameProgress(frames: number[], ts: number): number {
-  if (frames.length <= 1) {
-    return 1;
+const UI_MODE_SEQUENCE = ['full', 'balanced', 'focus'] as const;
+type UiMode = (typeof UI_MODE_SEQUENCE)[number];
+
+function nextUiMode(current: UiMode): UiMode {
+  const index = UI_MODE_SEQUENCE.indexOf(current);
+  if (index < 0) {
+    return 'full';
+  }
+  return UI_MODE_SEQUENCE[(index + 1) % UI_MODE_SEQUENCE.length] ?? 'full';
+}
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  const node = target as HTMLElement | null;
+  if (!node) {
+    return false;
   }
 
-  if (ts <= frames[0]) {
-    return 0;
+  const tagName = node.tagName?.toLowerCase();
+  if (tagName === 'input' || tagName === 'textarea' || tagName === 'select') {
+    return true;
   }
 
-  const last = frames[frames.length - 1];
-  if (ts >= last) {
-    return 1;
-  }
-
-  let left = 0;
-  let right = frames.length - 1;
-  while (left <= right) {
-    const middle = (left + right) >> 1;
-    const value = frames[middle];
-    if (value === undefined) {
-      break;
-    }
-
-    if (value <= ts) {
-      left = middle + 1;
-    } else {
-      right = middle - 1;
-    }
-  }
-
-  const lowerIndex = Math.max(0, right);
-  return lowerIndex / Math.max(1, frames.length - 1);
+  return Boolean(node.closest('[contenteditable="true"]'));
 }
 
 function App() {
   const autoParsedRef = useRef(false);
   const captureSceneRef = useRef<(() => Promise<Blob | null>) | null>(null);
   const { startParsing } = useWebSocket();
+  const {
+    roomId,
+    nickname,
+    roomAccessKey,
+    activeRoomId,
+    participants: roomParticipants,
+    messages: roomMessages,
+    pointers: roomPointers,
+    roomError,
+    queuedMessagesCount,
+    selfSocketId,
+    isSocketConnected,
+    setRoomId,
+    setNickname,
+    setRoomAccessKey,
+    joinRoom,
+    leaveRoom,
+    sendMessage,
+    sendPointer,
+    clearRoomError,
+  } = useCollaboration();
 
-  const [timelineTs, setTimelineTs] = useState<number | null>(null);
-  const [autoTour, setAutoTour] = useState(true);
-  const [showAtmosphere, setShowAtmosphere] = useState(true);
-  const [showWeather, setShowWeather] = useState(true);
-  const [showBuilders, setShowBuilders] = useState(true);
-  const [showCyberpunkOverlay, setShowCyberpunkOverlay] = useState(true);
-  const [timeOfDay, setTimeOfDay] = useState<
-    'auto' | 'dawn' | 'day' | 'sunset' | 'night'
-  >('auto');
-  const [weatherMode, setWeatherMode] = useState<
-    'auto' | 'clear' | 'mist' | 'rain' | 'storm'
-  >('auto');
-  const [dynamicAtmosphere, setDynamicAtmosphere] = useState(false);
-  const [atmosphereTick, setAtmosphereTick] = useState(0);
-  const [constructionMode, setConstructionMode] = useState(false);
-  const [constructionSpeed, setConstructionSpeed] = useState(1);
-  const [liveWatch, setLiveWatch] = useState(false);
-  const [topPanelCollapsed, setTopPanelCollapsed] = useState(true);
+  const [fpsValue, setFpsValue] = useState(0);
+  const [topHeaderHeight, setTopHeaderHeight] = useState(96);
+  const [scenePerformance, setScenePerformance] = useState<ScenePerformanceTelemetry>(
+    DEFAULT_SCENE_PERFORMANCE,
+  );
   const [languageFilter, setLanguageFilter] = useState('all');
   const [authorFilter, setAuthorFilter] = useState('all');
   const [districtFilter, setDistrictFilter] = useState('all');
@@ -138,12 +160,23 @@ function App() {
   const [viewMode, setViewMode] = useState<'overview' | 'architecture' | 'risk' | 'stack'>('overview');
   const [compareEnabled, setCompareEnabled] = useState(false);
   const [compareMode, setCompareMode] = useState<'ghost' | 'split'>('ghost');
-  const [compareTs, setCompareTs] = useState<number | null>(null);
   const [githubToken, setGithubToken] = useState('');
+  const narratorRepoLoadedRef = useRef<string | null>(null);
+  const narratorTrackRef = useRef<{
+    viewMode?: string;
+    selectedPath?: string | null;
+    timelineLabel?: string;
+    compareEnabled?: boolean;
+    tourMode?: string;
+  }>({});
+  const narratorUiSnapshotRef = useRef<Record<string, string>>({});
+  const narratorParserStatusRef = useRef<string>('');
+  const narratorAppliedStoryRef = useRef<string | null>(null);
 
   const status = useRepoStore((state) => state.status);
   const progress = useRepoStore((state) => state.progress);
   const message = useRepoStore((state) => state.message);
+  const stage = useRepoStore((state) => state.stage);
   const data = useRepoStore((state) => state.data);
   const error = useRepoStore((state) => state.error);
   const repoUrl = useRepoStore((state) => state.repoUrl);
@@ -153,6 +186,76 @@ function App() {
   const setRepoUrl = useRepoStore((state) => state.setRepoUrl);
   const setHoveredPath = useRepoStore((state) => state.setHoveredPath);
   const setSelectedPath = useRepoStore((state) => state.setSelectedPath);
+
+  const {
+    autoTour,
+    showAtmosphere,
+    showWeather,
+    showBuilders,
+    showMinimap,
+    showInsights,
+    showBranchMap,
+    showFileCard,
+    showChat,
+    showNarrator,
+    showPostProcessing,
+    adaptivePostFx,
+    modePresetIntensity,
+    visualPreset,
+    targetFps,
+    renderProfileLock,
+    showFps,
+    showCyberpunkOverlay,
+    timeOfDay,
+    weatherMode,
+    dynamicAtmosphere,
+    constructionMode,
+    constructionSpeed,
+    tourMode,
+    followDroneIndex,
+    walkBuildingPath,
+    liveWatch,
+    topPanelCollapsed,
+    uiMode,
+    effectiveTimeOfDay,
+    effectiveWeatherMode,
+    setAutoTour,
+    setShowAtmosphere,
+    setShowWeather,
+    setShowBuilders,
+    setShowMinimap,
+    setShowInsights,
+    setShowBranchMap,
+    setShowFileCard,
+    setShowChat,
+    setShowNarrator,
+    setShowPostProcessing,
+    setAdaptivePostFx,
+    setModePresetIntensity,
+    setShowFps,
+    setShowCyberpunkOverlay,
+    setTimeOfDay,
+    setWeatherMode,
+    setDynamicAtmosphere,
+    setConstructionMode,
+    setConstructionSpeed,
+    setTourMode,
+    setFollowDroneIndex,
+    setWalkBuildingPath,
+    setLiveWatch,
+    setTopPanelCollapsed,
+    setUiMode,
+    setVisualPreset,
+    setTargetFps,
+    setRenderProfileLock,
+  } = useScenePreferences({ generatedAt: data?.generatedAt });
+  const {
+    stories: narratorStories,
+    latestStory: latestNarratorStory,
+    status: narratorStatus,
+    error: narratorError,
+    sendNarratorAction,
+  } = useNarrator();
 
   useEffect(() => {
     if (autoParsedRef.current) {
@@ -188,81 +291,41 @@ function App() {
   }, [githubToken, liveWatch, repoUrl, startParsing]);
 
   useEffect(() => {
-    if (!dynamicAtmosphere) {
-      return;
-    }
-
-    const interval = setInterval(() => {
-      setAtmosphereTick((value) => value + 1);
-    }, 12000);
-
-    return () => clearInterval(interval);
-  }, [dynamicAtmosphere]);
-
-  const cityDna = useMemo(() => createCityDNA(data), [data]);
-  const timelineBounds = useMemo(() => getTimelineBounds(data), [data]);
-  const timelineFrames = useMemo(() => collectTimelineFrames(data), [data]);
-
-  useEffect(() => {
-    if (!timelineBounds) {
-      setTimelineTs(null);
-      setCompareTs(null);
-      return;
-    }
-
-    setTimelineTs(timelineBounds.max);
-    setCompareTs(timelineBounds.min);
-  }, [data?.generatedAt, timelineBounds]);
-
-  useEffect(() => {
-    if (!constructionMode) {
-      return;
-    }
-
-    if (timelineFrames.length === 0) {
-      return;
-    }
-
-    if (timelineFrames.length === 1) {
-      setTimelineTs(timelineFrames[0] ?? null);
-      return;
-    }
-
-    const first = timelineFrames[0];
-    const last = timelineFrames[timelineFrames.length - 1];
-    if (first === undefined || last === undefined) {
-      return;
-    }
-
-    setTimelineTs(first);
-    let rafId = 0;
-    let cursor = 0;
-    let previousTs = performance.now();
-    const framesPerSecond = Math.max(8, 24 * constructionSpeed);
-    const maxCursor = timelineFrames.length - 1;
-
-    const step = (now: number) => {
-      const deltaSeconds = Math.max(0, (now - previousTs) / 1000);
-      previousTs = now;
-      cursor = Math.min(maxCursor, cursor + deltaSeconds * framesPerSecond);
-
-      const lowerIndex = Math.floor(cursor);
-      const upperIndex = Math.min(maxCursor, lowerIndex + 1);
-      const localProgress = cursor - lowerIndex;
-
-      const lowerTs = timelineFrames[lowerIndex] ?? first;
-      const upperTs = timelineFrames[upperIndex] ?? last;
-      const interpolatedTs = lowerTs + (upperTs - lowerTs) * localProgress;
-      setTimelineTs(interpolatedTs);
-
-      if (cursor < maxCursor) {
-        rafId = window.requestAnimationFrame(step);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== 'h') {
+        return;
       }
+      if (isTypingTarget(event.target)) {
+        return;
+      }
+
+      event.preventDefault();
+      if (event.shiftKey) {
+        setUiMode((current) => nextUiMode(current as UiMode));
+        return;
+      }
+
+      setUiMode((current) => (current === 'focus' ? 'full' : 'focus'));
     };
 
-    rafId = window.requestAnimationFrame(step);
-    return () => window.cancelAnimationFrame(rafId);
-  }, [constructionMode, constructionSpeed, timelineFrames]);
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [setUiMode]);
+
+  const cityDna = useMemo(() => createCityDNA(data), [data]);
+  const {
+    timelineBounds,
+    timelineTs,
+    compareTs,
+    constructionProgress,
+    setTimelineTs,
+    setCompareTs,
+  } = useTimelinePlayback({
+    data,
+    constructionMode,
+    constructionSpeed,
+    compareEnabled,
+  });
 
   useEffect(() => {
     setLanguageFilter('all');
@@ -275,6 +338,12 @@ function App() {
     setViewMode('overview');
     setCompareEnabled(false);
     setCompareMode('ghost');
+    narratorTrackRef.current = {};
+    narratorRepoLoadedRef.current = null;
+    narratorUiSnapshotRef.current = {};
+    narratorParserStatusRef.current = '';
+    narratorAppliedStoryRef.current = null;
+    setScenePerformance(DEFAULT_SCENE_PERFORMANCE);
   }, [data?.generatedAt]);
 
   const timelineData = useMemo(() => {
@@ -621,6 +690,117 @@ function App() {
 
   const isBusy = status === 'connecting' || status === 'parsing';
   const hasSceneData = Boolean(filteredData && filteredData.files.length > 0);
+  const focusUiMode = uiMode === 'focus';
+  const showInsightsOverlay = showInsights && !focusUiMode;
+  const showBranchMapOverlay = showBranchMap && !focusUiMode;
+  const showFileCardOverlay = showFileCard && !focusUiMode;
+  const showMinimapOverlay = showMinimap && !focusUiMode;
+  const showChatOverlay = showChat && !focusUiMode;
+  const showNarratorOverlay = showNarrator && !focusUiMode;
+  const showStatusDockOverlay = !focusUiMode;
+
+  const applyNarratorUiAction = useCallback(
+    (action: NarratorUiAction) => {
+      if (action.type === 'set_panel_visibility') {
+        const value = action.value === 'on';
+        if (action.target === 'chat') {
+          setShowChat(value);
+          return;
+        }
+        if (action.target === 'narrator') {
+          setShowNarrator(value);
+          return;
+        }
+        if (action.target === 'insights') {
+          setShowInsights(value);
+          return;
+        }
+        if (action.target === 'branch_map') {
+          setShowBranchMap(value);
+          return;
+        }
+        if (action.target === 'minimap') {
+          setShowMinimap(value);
+          return;
+        }
+        setShowFileCard(value);
+        return;
+      }
+
+      if (!hasSceneData) {
+        return;
+      }
+
+      if (action.type === 'set_view_mode') {
+        setViewMode(action.value);
+        return;
+      }
+      if (action.type === 'set_tour_mode') {
+        setTourMode(action.value);
+        return;
+      }
+      if (action.type === 'set_compare_enabled') {
+        setCompareEnabled(action.value === 'on');
+        return;
+      }
+      if (action.type === 'set_compare_mode') {
+        setCompareEnabled(true);
+        setCompareMode(action.value);
+        return;
+      }
+      if (action.type === 'set_branch_only_mode') {
+        setBranchOnlyMode(action.value === 'on');
+        return;
+      }
+      if (action.type === 'select_file') {
+        const normalized = action.value.trim().replace(/^\/+/, '').toLowerCase();
+        if (!normalized || !filteredData) {
+          return;
+        }
+
+        const matchedFile =
+          filteredData.files.find((file) => file.path.toLowerCase() === normalized) ??
+          filteredData.files.find((file) => file.path.toLowerCase().includes(normalized));
+        if (!matchedFile) {
+          return;
+        }
+
+        setSelectedPath(matchedFile.path);
+        setShowFileCard(true);
+      }
+    },
+    [
+      filteredData,
+      hasSceneData,
+      setSelectedPath,
+      setShowBranchMap,
+      setShowChat,
+      setShowFileCard,
+      setShowInsights,
+      setShowMinimap,
+      setShowNarrator,
+      setTourMode,
+    ],
+  );
+
+  useEffect(() => {
+    if (!latestNarratorStory) {
+      return;
+    }
+    if (narratorAppliedStoryRef.current === latestNarratorStory.id) {
+      return;
+    }
+    narratorAppliedStoryRef.current = latestNarratorStory.id;
+
+    const uiActions = latestNarratorStory.uiActions ?? [];
+    if (uiActions.length === 0) {
+      return;
+    }
+
+    uiActions.forEach((action) => {
+      applyNarratorUiAction(action);
+    });
+  }, [applyNarratorUiAction, latestNarratorStory]);
 
   const timelineLabel = timelineTs
     ? new Date(timelineTs).toLocaleString(undefined, {
@@ -679,6 +859,368 @@ function App() {
     timelineTs,
   ]);
 
+  useEffect(() => {
+    if (!filteredData || !insights) {
+      return;
+    }
+    if (narratorRepoLoadedRef.current === filteredData.generatedAt) {
+      return;
+    }
+    narratorRepoLoadedRef.current = filteredData.generatedAt;
+
+    sendNarratorAction({
+      type: 'repo_loaded',
+      repoUrl,
+      viewMode,
+      timelineLabel,
+      compareEnabled,
+      compareLabel: compareEnabled ? compareLabel : null,
+      tourMode,
+      stats: {
+        totalFiles: insights.totalFiles,
+        totalCommits: insights.totalCommits,
+        topLanguage: insights.languages[0]?.name ?? null,
+        hotspotPath:
+          Array.from(riskProfiles.entries())
+            .sort((a, b) => b[1].risk - a[1].risk)[0]?.[0] ?? null,
+      },
+    });
+  }, [
+    compareEnabled,
+    compareLabel,
+    filteredData,
+    insights,
+    repoUrl,
+    riskProfiles,
+    sendNarratorAction,
+    timelineLabel,
+    tourMode,
+    viewMode,
+  ]);
+
+  useEffect(() => {
+    if (!hasSceneData || narratorTrackRef.current.viewMode === viewMode) {
+      return;
+    }
+    narratorTrackRef.current.viewMode = viewMode;
+    sendNarratorAction({
+      type: 'mode_change',
+      repoUrl,
+      viewMode,
+      timelineLabel,
+      compareEnabled,
+      compareLabel: compareEnabled ? compareLabel : null,
+      tourMode,
+    });
+  }, [
+    compareEnabled,
+    compareLabel,
+    hasSceneData,
+    repoUrl,
+    sendNarratorAction,
+    timelineLabel,
+    tourMode,
+    viewMode,
+  ]);
+
+  useEffect(() => {
+    if (!hasSceneData || narratorTrackRef.current.compareEnabled === compareEnabled) {
+      return;
+    }
+    narratorTrackRef.current.compareEnabled = compareEnabled;
+    sendNarratorAction({
+      type: 'compare_toggle',
+      repoUrl,
+      viewMode,
+      timelineLabel,
+      selectedPath,
+      compareEnabled,
+      compareLabel: compareEnabled ? compareLabel : null,
+      tourMode,
+    });
+  }, [
+    compareEnabled,
+    compareLabel,
+    hasSceneData,
+    repoUrl,
+    selectedPath,
+    sendNarratorAction,
+    timelineLabel,
+    tourMode,
+    viewMode,
+  ]);
+
+  useEffect(() => {
+    if (!hasSceneData || narratorTrackRef.current.tourMode === tourMode) {
+      return;
+    }
+    narratorTrackRef.current.tourMode = tourMode;
+    sendNarratorAction({
+      type: 'tour_mode',
+      repoUrl,
+      viewMode,
+      timelineLabel,
+      selectedPath,
+      compareEnabled,
+      compareLabel: compareEnabled ? compareLabel : null,
+      tourMode,
+    });
+  }, [
+    compareEnabled,
+    compareLabel,
+    hasSceneData,
+    repoUrl,
+    selectedPath,
+    sendNarratorAction,
+    timelineLabel,
+    tourMode,
+    viewMode,
+  ]);
+
+  useEffect(() => {
+    if (!hasSceneData || !selectedPath || narratorTrackRef.current.selectedPath === selectedPath) {
+      return;
+    }
+    narratorTrackRef.current.selectedPath = selectedPath;
+    sendNarratorAction({
+      type: 'focus_file',
+      repoUrl,
+      viewMode,
+      timelineLabel,
+      selectedPath,
+      compareEnabled,
+      compareLabel: compareEnabled ? compareLabel : null,
+      tourMode,
+    });
+  }, [
+    compareEnabled,
+    compareLabel,
+    hasSceneData,
+    repoUrl,
+    selectedPath,
+    sendNarratorAction,
+    timelineLabel,
+    tourMode,
+    viewMode,
+  ]);
+
+  useEffect(() => {
+    if (!hasSceneData) {
+      return;
+    }
+
+    const handle = window.setTimeout(() => {
+      if (narratorTrackRef.current.timelineLabel === timelineLabel) {
+        return;
+      }
+      narratorTrackRef.current.timelineLabel = timelineLabel;
+      sendNarratorAction({
+        type: 'timeline_shift',
+        repoUrl,
+        viewMode,
+        timelineLabel,
+        selectedPath,
+        compareEnabled,
+        compareLabel: compareEnabled ? compareLabel : null,
+        tourMode,
+      });
+    }, 720);
+
+    return () => window.clearTimeout(handle);
+  }, [
+    compareEnabled,
+    compareLabel,
+    hasSceneData,
+    repoUrl,
+    selectedPath,
+    sendNarratorAction,
+    timelineLabel,
+    tourMode,
+    viewMode,
+  ]);
+
+  useEffect(() => {
+    if (narratorParserStatusRef.current === status) {
+      return;
+    }
+
+    const previous = narratorParserStatusRef.current;
+    narratorParserStatusRef.current = status;
+    if (!previous) {
+      return;
+    }
+
+    sendNarratorAction({
+      type: 'ui_interaction',
+      interaction: 'parser.status',
+      interactionValue: status,
+      repoUrl,
+      viewMode,
+      timelineLabel,
+      selectedPath,
+      compareEnabled,
+      compareLabel: compareEnabled ? compareLabel : null,
+      tourMode,
+    });
+  }, [
+    compareEnabled,
+    compareLabel,
+    repoUrl,
+    selectedPath,
+    sendNarratorAction,
+    status,
+    timelineLabel,
+    tourMode,
+    viewMode,
+  ]);
+
+  useEffect(() => {
+    const snapshot: Record<string, string> = {
+      languageFilter,
+      authorFilter,
+      districtFilter,
+      branchFilter,
+      branchOnlyMode: branchOnlyMode ? 'on' : 'off',
+      riskFilter,
+      pathFilter: pathFilter.trim(),
+      compareMode,
+      autoTour: autoTour ? 'on' : 'off',
+      followDroneIndex: String(followDroneIndex),
+      liveWatch: liveWatch ? 'on' : 'off',
+      showAtmosphere: showAtmosphere ? 'on' : 'off',
+      showWeather: showWeather ? 'on' : 'off',
+      showBuilders: showBuilders ? 'on' : 'off',
+      showMinimap: showMinimapOverlay ? 'on' : 'off',
+      showInsights: showInsightsOverlay ? 'on' : 'off',
+      showBranchMap: showBranchMapOverlay ? 'on' : 'off',
+      showFileCard: showFileCardOverlay ? 'on' : 'off',
+      showChat: showChatOverlay ? 'on' : 'off',
+      showNarrator: showNarratorOverlay ? 'on' : 'off',
+      showPostProcessing: showPostProcessing ? 'on' : 'off',
+      adaptivePostFx: adaptivePostFx ? 'on' : 'off',
+      modePresetIntensity: modePresetIntensity.toFixed(2),
+      visualPreset,
+      targetFps: String(targetFps),
+      renderProfileLock,
+      showFps: showFps ? 'on' : 'off',
+      showCyberpunkOverlay: showCyberpunkOverlay ? 'on' : 'off',
+      timeOfDay,
+      weatherMode,
+      dynamicAtmosphere: dynamicAtmosphere ? 'on' : 'off',
+      constructionMode: constructionMode ? 'on' : 'off',
+      constructionSpeed: constructionSpeed.toFixed(2),
+      topPanelCollapsed: topPanelCollapsed ? 'on' : 'off',
+      uiMode,
+      showStatusDock: showStatusDockOverlay ? 'on' : 'off',
+      activeRoomId: activeRoomId ?? 'none',
+      roomConnected: isSocketConnected ? 'on' : 'off',
+      walkBuildingPath: walkBuildingPath ?? 'none',
+    };
+
+    const previous = narratorUiSnapshotRef.current;
+    const previousKeys = Object.keys(previous);
+    if (previousKeys.length === 0) {
+      narratorUiSnapshotRef.current = snapshot;
+      return;
+    }
+
+    const changed = Object.entries(snapshot)
+      .filter(([key, value]) => previous[key] !== value)
+      .map(([key, value]) => ({ key, value }));
+    narratorUiSnapshotRef.current = snapshot;
+
+    if (changed.length === 0 || !hasSceneData) {
+      return;
+    }
+
+    const basePayload = {
+      repoUrl,
+      viewMode,
+      timelineLabel,
+      selectedPath,
+      compareEnabled,
+      compareLabel: compareEnabled ? compareLabel : null,
+      tourMode,
+    } as const;
+
+    if (changed.length > 4) {
+      sendNarratorAction({
+        type: 'ui_interaction',
+        interaction: 'ui.batch',
+        interactionValue: changed
+          .slice(0, 6)
+          .map((item) => `${item.key}=${item.value}`)
+          .join(', '),
+        ...basePayload,
+      });
+      return;
+    }
+
+    changed.forEach((item) => {
+      sendNarratorAction({
+        type: 'ui_interaction',
+        interaction: `ui.${item.key}`,
+        interactionValue: item.value,
+        ...basePayload,
+      });
+    });
+  }, [
+    activeRoomId,
+    adaptivePostFx,
+    authorFilter,
+    autoTour,
+    branchFilter,
+    branchOnlyMode,
+    compareEnabled,
+    compareLabel,
+    compareMode,
+    constructionMode,
+    constructionSpeed,
+    districtFilter,
+    dynamicAtmosphere,
+    followDroneIndex,
+    hasSceneData,
+    isSocketConnected,
+    languageFilter,
+    liveWatch,
+    modePresetIntensity,
+    visualPreset,
+    targetFps,
+    renderProfileLock,
+    pathFilter,
+    repoUrl,
+    riskFilter,
+    selectedPath,
+    sendNarratorAction,
+    showAtmosphere,
+    showBranchMapOverlay,
+    showBranchMap,
+    showBuilders,
+    showChatOverlay,
+    showChat,
+    showCyberpunkOverlay,
+    showFileCardOverlay,
+    showFileCard,
+    showFps,
+    showInsightsOverlay,
+    showInsights,
+    showMinimapOverlay,
+    showMinimap,
+    showNarratorOverlay,
+    showNarrator,
+    showPostProcessing,
+    showStatusDockOverlay,
+    showWeather,
+    timeOfDay,
+    timelineLabel,
+    topPanelCollapsed,
+    tourMode,
+    uiMode,
+    viewMode,
+    walkBuildingPath,
+    weatherMode,
+  ]);
+
   const totalCommitsByPath = useMemo(() => {
     const map = new Map<string, number>();
     (data?.files ?? []).forEach((file) => {
@@ -686,60 +1228,95 @@ function App() {
     });
     return map;
   }, [data]);
-  const effectiveTimeOfDay = useMemo(() => {
-    if (!dynamicAtmosphere) {
-      return timeOfDay;
-    }
-
-    const sequence: Array<'dawn' | 'day' | 'sunset' | 'night'> = [
-      'dawn',
-      'day',
-      'sunset',
-      'night',
-    ];
-    return sequence[atmosphereTick % sequence.length] ?? 'day';
-  }, [atmosphereTick, dynamicAtmosphere, timeOfDay]);
-  const effectiveWeatherMode = useMemo(() => {
-    if (!dynamicAtmosphere) {
-      return weatherMode;
-    }
-
-    const sequence: Array<'clear' | 'mist' | 'rain' | 'storm'> = [
-      'clear',
-      'mist',
-      'rain',
-      'storm',
-      'mist',
-      'clear',
-    ];
-    return sequence[atmosphereTick % sequence.length] ?? 'clear';
-  }, [atmosphereTick, dynamicAtmosphere, weatherMode]);
-  const constructionProgress = useMemo(() => {
-    if (timelineTs === null) {
-      return 1;
-    }
-
-    if (constructionMode && timelineFrames.length > 1) {
-      return findFrameProgress(timelineFrames, timelineTs);
-    }
-
-    if (!timelineBounds) {
-      return 1;
+  const constructionWindowByPath = useMemo(() => {
+    const map = new Map<string, ConstructionWindow>();
+    if (!data || !timelineBounds) {
+      return map;
     }
 
     const span = Math.max(1, timelineBounds.max - timelineBounds.min);
-    return Math.min(1, Math.max(0, (timelineTs - timelineBounds.min) / span));
-  }, [constructionMode, timelineBounds, timelineFrames, timelineTs]);
+    data.files.forEach((file) => {
+      let firstTs = Number.POSITIVE_INFINITY;
+      let lastTs = Number.NEGATIVE_INFINITY;
 
-  useEffect(() => {
-    if (!compareEnabled || compareTs === null || timelineTs === null) {
-      return;
-    }
+      file.commits.forEach((commit) => {
+        const ts = new Date(commit.date).getTime();
+        if (Number.isNaN(ts)) {
+          return;
+        }
 
-    if (compareTs > timelineTs) {
-      setCompareTs(timelineTs);
-    }
-  }, [compareEnabled, compareTs, timelineTs]);
+        firstTs = Math.min(firstTs, ts);
+        lastTs = Math.max(lastTs, ts);
+      });
+
+      if (!Number.isFinite(firstTs) || !Number.isFinite(lastTs)) {
+        map.set(file.path, { start: 0, end: 1 });
+        return;
+      }
+
+      const rawStart = (firstTs - timelineBounds.min) / span;
+      const rawEnd = (lastTs - timelineBounds.min) / span;
+      const start = Math.max(0, Math.min(1, rawStart));
+      const end = Math.max(0, Math.min(1, rawEnd));
+
+      const minimumWindow = 0.03;
+      const boundedStart = Math.min(start, Math.max(0, 1 - minimumWindow));
+      const boundedEnd = Math.max(
+        boundedStart + minimumWindow,
+        Math.min(1, Math.max(end, boundedStart)),
+      );
+
+      map.set(file.path, {
+        start: boundedStart,
+        end: Math.min(1, boundedEnd),
+      });
+    });
+
+    return map;
+  }, [data, timelineBounds]);
+  const remotePointers = useMemo(
+    () => roomPointers.filter((pointer) => pointer.socketId !== selfSocketId),
+    [roomPointers, selfSocketId],
+  );
+  const handlePointerSample = useCallback(
+    (sample: { x: number; y: number; z: number; path: string | null }) => {
+      if (!activeRoomId) {
+        return;
+      }
+      sendPointer(sample);
+    },
+    [activeRoomId, sendPointer],
+  );
+  const handleNarratorManualCue = useCallback(
+    (cue: NarratorManualCue) => {
+      if (!hasSceneData) {
+        return;
+      }
+
+      sendNarratorAction({
+        type: 'manual',
+        manualCue: cue,
+        repoUrl,
+        viewMode,
+        timelineLabel,
+        selectedPath,
+        compareEnabled,
+        compareLabel: compareEnabled ? compareLabel : null,
+        tourMode,
+      });
+    },
+    [
+      compareEnabled,
+      compareLabel,
+      hasSceneData,
+      repoUrl,
+      selectedPath,
+      sendNarratorAction,
+      timelineLabel,
+      tourMode,
+      viewMode,
+    ],
+  );
 
   const buildExecutiveSummary = () => {
     const lines: string[] = [];
@@ -788,114 +1365,221 @@ function App() {
     >
       <Box sx={{ position: 'absolute', inset: 0 }}>
         {hasSceneData && filteredData ? (
-          <Scene3D
-            files={filteredData.files}
-            imports={filteredData.imports}
-            branches={filteredData.branches ?? []}
-            stack={filteredData.stack ?? null}
-            dna={cityDna}
-            insights={insights}
-            riskByPath={riskProfiles}
-            hoveredPath={hoveredPath}
-            selectedPath={selectedPath}
-            viewMode={viewMode}
-            compareEnabled={compareEnabled}
-            compareMode={compareMode}
-            compareFiles={compareFilteredData?.files ?? []}
-            autoTour={autoTour}
-            showAtmosphere={showAtmosphere || viewMode === 'architecture' || viewMode === 'stack'}
-            showWeather={viewMode === 'risk' ? true : showWeather}
-            showBuilders={showBuilders}
-            timeOfDay={effectiveTimeOfDay}
-            weatherMode={effectiveWeatherMode}
-            totalCommitsByPath={totalCommitsByPath}
-            constructionMode={constructionMode}
-            constructionProgress={constructionProgress}
-            onHover={setHoveredPath}
-            onSelect={setSelectedPath}
-            onCaptureReady={(capture) => {
-              captureSceneRef.current = capture;
-            }}
-          />
-        ) : (
-          <Box sx={{ p: 2, height: '100%' }}>
-            <Paper
-              sx={{
-                p: 3,
-                height: '100%',
-                display: 'grid',
-                placeItems: 'center',
-                backgroundColor: 'rgba(255,255,255,0.65)',
-              }}
-            >
-              <Typography color="text.secondary" textAlign="center">
-                {filteredData && filteredData.files.length === 0
-                  ? 'No files exist at this timeline position. Move the slider forward.'
-                  : 'Enter a public GitHub repository URL and click "Построить город".'}
-              </Typography>
-            </Paper>
-          </Box>
-        )}
-
-        {hasSceneData && (
-          <CyberpunkCanvasOverlay
-            enabled={showCyberpunkOverlay}
-            accentColor={cityDna?.palette.accent ?? '#2ec8ff'}
-            seed={cityDna?.seed ?? 42}
-            mode={viewMode}
-            intensity={showAtmosphere ? 1 : 0.82}
-          />
-        )}
-
-        {hasSceneData && isBusy && (
-          <Paper
-            elevation={2}
-            sx={{
-              position: 'absolute',
-              left: { xs: 8, md: 18 },
-              bottom: { xs: 8, md: 18 },
-              px: 1.5,
-              py: 1,
-              zIndex: 12,
-              backgroundColor: 'rgba(255,255,255,0.9)',
-              backdropFilter: 'blur(6px)',
-              borderRadius: 2,
-            }}
+          <Suspense
+            fallback={
+              <Box sx={{ p: { xs: 1.2, md: 2 }, height: '100%' }}>
+                <Box
+                  sx={{
+                    p: { xs: 1.2, md: 2 },
+                    height: '100%',
+                    display: 'grid',
+                    placeItems: 'center',
+                    background:
+                      'radial-gradient(circle at 14% 18%, rgba(96,223,255,0.12), transparent 38%), radial-gradient(circle at 83% 26%, rgba(105,134,255,0.16), transparent 34%), linear-gradient(160deg, rgba(8,18,40,0.55), rgba(8,18,40,0.24))',
+                    borderRadius: 3,
+                  }}
+                >
+                  <ProgressBar
+                    title="Bootstrapping City Engine"
+                    subtitle="Streaming meshes, lighting and simulation layers"
+                    message="Compiling scene modules and calibrating cinematic pipeline..."
+                    sx={{ width: 'min(560px, 92vw)' }}
+                  />
+                </Box>
+              </Box>
+            }
           >
-            <Typography variant="caption" color="text.secondary">
-              {message || 'Updating city...'}
-            </Typography>
-          </Paper>
-        )}
-
-        {selectedFile && (
-          <FileInfoCard
-            file={selectedFile}
-            riskProfile={selectedRiskProfile}
-            onClose={() => setSelectedPath(null)}
+            <Scene3DLazy
+              files={filteredData.files}
+              imports={filteredData.imports}
+              branches={filteredData.branches ?? []}
+              stack={filteredData.stack ?? null}
+              dna={cityDna}
+              insights={insights}
+              riskByPath={riskProfiles}
+              hoveredPath={hoveredPath}
+              selectedPath={selectedPath}
+              viewMode={viewMode}
+              compareEnabled={compareEnabled}
+              compareMode={compareMode}
+              compareFiles={compareFilteredData?.files ?? []}
+              autoTour={autoTour}
+              showAtmosphere={showAtmosphere}
+              showWeather={showWeather}
+              showBuilders={showBuilders}
+              showPostProcessing={showPostProcessing}
+              adaptivePostFx={adaptivePostFx}
+              modePresetIntensity={modePresetIntensity}
+              visualPreset={visualPreset}
+              targetFps={targetFps}
+              renderProfileLock={renderProfileLock}
+              showFps={showFps}
+              tourMode={tourMode}
+              followDroneIndex={followDroneIndex}
+              livePointers={remotePointers}
+              timeOfDay={effectiveTimeOfDay}
+              weatherMode={effectiveWeatherMode}
+              totalCommitsByPath={totalCommitsByPath}
+              constructionWindowByPath={constructionWindowByPath}
+              constructionMode={constructionMode}
+              constructionProgress={constructionProgress}
+              onHover={setHoveredPath}
+              onSelect={setSelectedPath}
+              onCaptureReady={(capture) => {
+                captureSceneRef.current = capture;
+              }}
+              onFpsUpdate={setFpsValue}
+              onPerformanceTelemetry={setScenePerformance}
+              onFollowDroneChange={setFollowDroneIndex}
+              onWalkBuildingChange={setWalkBuildingPath}
+              onPointerSample={handlePointerSample}
+            />
+          </Suspense>
+        ) : (
+          <ProductEmptyState
+            onParseRepo={(repo) => {
+              setRepoUrl(repo);
+              startParsing(repo, githubToken);
+            }}
           />
         )}
 
-        {hasSceneData && insights && (
-          <InsightPanel insights={insights} analysis={filteredData?.analysis ?? null} />
-        )}
-        {hasSceneData && filteredData && (
-          <BranchTreePanel
-            branches={(filteredData.branches ?? []).slice(0, 24)}
-            selectedBranch={branchFilter}
-            branchOnlyMode={branchOnlyMode}
-            onSelectBranch={setBranchFilter}
-            onToggleBranchOnly={setBranchOnlyMode}
-          />
-        )}
-        {hasSceneData && filteredData && (
-          <Minimap
-            files={filteredData.files}
-            selectedPath={selectedPath}
-            hoveredPath={hoveredPath}
-            onSelect={setSelectedPath}
-          />
-        )}
+        <AppOverlayLayer
+          hasSceneData={hasSceneData}
+          isBusy={isBusy}
+          parseStatus={status}
+          progress={progress}
+          message={message}
+          stage={stage}
+          showFps={showFps}
+          fpsValue={fpsValue}
+          scenePerformance={scenePerformance}
+          selectedFile={selectedFile}
+          selectedRiskProfile={selectedRiskProfile}
+          insights={insights}
+          filteredData={filteredData}
+          branchFilter={branchFilter}
+          branchOnlyMode={branchOnlyMode}
+          selectedPath={selectedPath}
+          hoveredPath={hoveredPath}
+          showFileCard={showFileCardOverlay}
+          showInsights={showInsightsOverlay}
+          showBranchMap={showBranchMapOverlay}
+          showMinimap={showMinimapOverlay}
+          showChat={showChatOverlay}
+          showNarrator={showNarratorOverlay}
+          showStatusDock={showStatusDockOverlay}
+          showCyberpunkOverlay={showCyberpunkOverlay}
+          showAtmosphere={showAtmosphere}
+          topHeaderHeight={topHeaderHeight}
+          effectiveTimeOfDay={effectiveTimeOfDay}
+          effectiveWeatherMode={effectiveWeatherMode}
+          dynamicAtmosphere={dynamicAtmosphere}
+          viewMode={viewMode}
+          uiMode={uiMode}
+          cityDna={cityDna}
+          tourMode={tourMode}
+          walkBuildingPath={walkBuildingPath}
+          liveWatch={liveWatch}
+          roomId={roomId}
+          nickname={nickname}
+          roomAccessKey={roomAccessKey}
+          activeRoomId={activeRoomId}
+          roomParticipants={roomParticipants}
+          roomMessages={roomMessages}
+          roomError={roomError}
+          queuedMessagesCount={queuedMessagesCount}
+          selfSocketId={selfSocketId}
+          isSocketConnected={isSocketConnected}
+          narratorStories={narratorStories}
+          narratorStatus={narratorStatus}
+          narratorError={narratorError}
+          onNarratorManualCue={handleNarratorManualCue}
+          onSelectPath={setSelectedPath}
+          onCloseFileCard={() => setSelectedPath(null)}
+          onSelectBranch={setBranchFilter}
+          onToggleBranchOnly={setBranchOnlyMode}
+          onRoomIdChange={setRoomId}
+          onNicknameChange={setNickname}
+          onRoomAccessKeyChange={setRoomAccessKey}
+          onJoinRoom={() => {
+            joinRoom();
+            sendNarratorAction({
+              type: 'ui_interaction',
+              interaction: 'chat.join',
+              interactionValue: roomId || null,
+              repoUrl,
+              viewMode,
+              timelineLabel,
+              selectedPath,
+              compareEnabled,
+              compareLabel: compareEnabled ? compareLabel : null,
+              tourMode,
+            });
+          }}
+          onLeaveRoom={() => {
+            leaveRoom();
+            sendNarratorAction({
+              type: 'ui_interaction',
+              interaction: 'chat.leave',
+              interactionValue: activeRoomId ?? roomId,
+              repoUrl,
+              viewMode,
+              timelineLabel,
+              selectedPath,
+              compareEnabled,
+              compareLabel: compareEnabled ? compareLabel : null,
+              tourMode,
+            });
+          }}
+          onSendMessage={(text, attachments, replyToId) => {
+            const sourceMessageId = sendMessage(text, attachments, replyToId);
+            const narratorQuestion = extractNarratorQuestionFromChat(text);
+            if (narratorQuestion) {
+              sendNarratorAction({
+                type: 'chat_question',
+                question: narratorQuestion,
+                sourceMessageId,
+                interaction: 'chat.ask',
+                interactionValue: `len=${narratorQuestion.length};files=${attachments.length}`,
+                repoUrl,
+                viewMode,
+                timelineLabel,
+                selectedPath,
+                compareEnabled,
+                compareLabel: compareEnabled ? compareLabel : null,
+                tourMode,
+                stats: insights
+                  ? {
+                      totalFiles: insights.totalFiles,
+                      totalCommits: insights.totalCommits,
+                      topLanguage: insights.languages[0]?.name ?? null,
+                      hotspotPath:
+                        Array.from(riskProfiles.entries())
+                          .sort((a, b) => b[1].risk - a[1].risk)[0]?.[0] ?? null,
+                    }
+                  : undefined,
+              });
+              return;
+            }
+
+            sendNarratorAction({
+              type: 'ui_interaction',
+              interaction: 'chat.message',
+              interactionValue: `text=${text.trim().length};files=${attachments.length}${
+                replyToId ? ';reply=1' : ''
+              }`,
+              repoUrl,
+              viewMode,
+              timelineLabel,
+              selectedPath,
+              compareEnabled,
+              compareLabel: compareEnabled ? compareLabel : null,
+              tourMode,
+            });
+          }}
+          onClearRoomError={clearRoomError}
+        />
       </Box>
 
       <TopControlPanel
@@ -909,6 +1593,7 @@ function App() {
         timelineTs={timelineTs}
         timelineLabel={timelineLabel}
         cityDna={cityDna}
+        scenePerformance={scenePerformance}
         githubToken={githubToken}
         languageFilter={languageFilter}
         authorFilter={authorFilter}
@@ -928,10 +1613,25 @@ function App() {
         branchOptions={branchOptions}
         jumpOptions={jumpOptions}
         autoTour={autoTour}
+        tourMode={tourMode}
+        followDroneIndex={followDroneIndex}
         liveWatch={liveWatch}
         showAtmosphere={showAtmosphere}
         showWeather={showWeather}
         showBuilders={showBuilders}
+        showMinimap={showMinimap}
+        showInsights={showInsights}
+        showBranchMap={showBranchMap}
+        showFileCard={showFileCard}
+        showChat={showChat}
+        showNarrator={showNarrator}
+        showPostProcessing={showPostProcessing}
+        adaptivePostFx={adaptivePostFx}
+        modePresetIntensity={modePresetIntensity}
+        visualPreset={visualPreset}
+        targetFps={targetFps}
+        renderProfileLock={renderProfileLock}
+        showFps={showFps}
         showCyberpunkOverlay={showCyberpunkOverlay}
         timeOfDay={timeOfDay}
         weatherMode={weatherMode}
@@ -939,23 +1639,54 @@ function App() {
         constructionMode={constructionMode}
         constructionSpeed={constructionSpeed}
         constructionProgress={constructionProgress}
+        uiMode={uiMode}
         collapsed={topPanelCollapsed}
         onToggleCollapsed={() => setTopPanelCollapsed((value) => !value)}
         onRepoUrlChange={setRepoUrl}
         onGithubTokenChange={setGithubToken}
-        onStartParsing={() => startParsing(repoUrl, githubToken)}
+        onStartParsing={() => {
+          sendNarratorAction({
+            type: 'ui_interaction',
+            interaction: 'parser.start',
+            interactionValue: repoUrl || null,
+            repoUrl,
+            viewMode,
+            timelineLabel,
+            selectedPath,
+            compareEnabled,
+            compareLabel: compareEnabled ? compareLabel : null,
+            tourMode,
+          });
+          startParsing(repoUrl, githubToken);
+        }}
         onTimelineChange={setTimelineTs}
         onAutoTourChange={setAutoTour}
+        onTourModeChange={setTourMode}
+        onFollowDroneIndexChange={setFollowDroneIndex}
         onLiveWatchChange={setLiveWatch}
         onShowAtmosphereChange={setShowAtmosphere}
         onShowWeatherChange={setShowWeather}
         onShowBuildersChange={setShowBuilders}
+        onShowMinimapChange={setShowMinimap}
+        onShowInsightsChange={setShowInsights}
+        onShowBranchMapChange={setShowBranchMap}
+        onShowFileCardChange={setShowFileCard}
+        onShowChatChange={setShowChat}
+        onShowNarratorChange={setShowNarrator}
+        onShowPostProcessingChange={setShowPostProcessing}
+        onAdaptivePostFxChange={setAdaptivePostFx}
+        onModePresetIntensityChange={setModePresetIntensity}
+        onVisualPresetChange={setVisualPreset}
+        onTargetFpsChange={setTargetFps}
+        onRenderProfileLockChange={setRenderProfileLock}
+        onShowFpsChange={setShowFps}
         onShowCyberpunkOverlayChange={setShowCyberpunkOverlay}
         onTimeOfDayChange={setTimeOfDay}
         onWeatherModeChange={setWeatherMode}
         onDynamicAtmosphereChange={setDynamicAtmosphere}
         onConstructionModeChange={setConstructionMode}
         onConstructionSpeedChange={setConstructionSpeed}
+        onUiModeChange={setUiMode}
         onLanguageFilterChange={setLanguageFilter}
         onAuthorFilterChange={setAuthorFilter}
         onDistrictFilterChange={setDistrictFilter}
@@ -967,6 +1698,18 @@ function App() {
         onCompareModeChange={setCompareMode}
         onCompareTsChange={setCompareTs}
         onExportSummary={async () => {
+          sendNarratorAction({
+            type: 'ui_interaction',
+            interaction: 'export.summary',
+            interactionValue: 'clipboard',
+            repoUrl,
+            viewMode,
+            timelineLabel,
+            selectedPath,
+            compareEnabled,
+            compareLabel: compareEnabled ? compareLabel : null,
+            tourMode,
+          });
           const summary = buildExecutiveSummary();
           try {
             await navigator.clipboard.writeText(summary);
@@ -975,6 +1718,18 @@ function App() {
           }
         }}
         onExportPng={async () => {
+          sendNarratorAction({
+            type: 'ui_interaction',
+            interaction: 'export.png',
+            interactionValue: 'scene-capture',
+            repoUrl,
+            viewMode,
+            timelineLabel,
+            selectedPath,
+            compareEnabled,
+            compareLabel: compareEnabled ? compareLabel : null,
+            tourMode,
+          });
           const repoName = filteredData?.repository.repo ?? 'repository';
           const capture = captureSceneRef.current;
           if (capture) {
@@ -998,6 +1753,18 @@ function App() {
           }, 'image/png');
         }}
         onExportJson={() => {
+          sendNarratorAction({
+            type: 'ui_interaction',
+            interaction: 'export.json',
+            interactionValue: 'snapshot',
+            repoUrl,
+            viewMode,
+            timelineLabel,
+            selectedPath,
+            compareEnabled,
+            compareLabel: compareEnabled ? compareLabel : null,
+            tourMode,
+          });
           const payload = {
             generatedAt: new Date().toISOString(),
             repoUrl,
@@ -1015,6 +1782,18 @@ function App() {
           );
         }}
         onExportHotspots={() => {
+          sendNarratorAction({
+            type: 'ui_interaction',
+            interaction: 'export.hotspots',
+            interactionValue: 'csv',
+            repoUrl,
+            viewMode,
+            timelineLabel,
+            selectedPath,
+            compareEnabled,
+            compareLabel: compareEnabled ? compareLabel : null,
+            tourMode,
+          });
           const top = Array.from(riskProfiles.entries())
             .sort((a, b) => b[1].risk - a[1].risk)
             .slice(0, 60)
@@ -1049,7 +1828,26 @@ function App() {
             'text/csv;charset=utf-8',
           );
         }}
-        onJumpToFile={(path) => setSelectedPath(path)}
+        onJumpToFile={(path) => {
+          setSelectedPath(path);
+          sendNarratorAction({
+            type: 'ui_interaction',
+            interaction: 'ui.jump_to_file',
+            interactionValue: path,
+            repoUrl,
+            viewMode,
+            timelineLabel,
+            selectedPath: path,
+            compareEnabled,
+            compareLabel: compareEnabled ? compareLabel : null,
+            tourMode,
+          });
+        }}
+        onHeaderHeightChange={(height) => {
+          setTopHeaderHeight((current) =>
+            Math.abs(current - height) < 2 ? current : height,
+          );
+        }}
       />
     </Box>
   );

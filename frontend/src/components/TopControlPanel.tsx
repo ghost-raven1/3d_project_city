@@ -1,4 +1,10 @@
-import { FormEvent, useMemo, useState } from 'react';
+import {
+  FormEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import DataObjectRoundedIcon from '@mui/icons-material/DataObjectRounded';
 import ImageRoundedIcon from '@mui/icons-material/ImageRounded';
@@ -30,10 +36,21 @@ import {
   ToggleButtonGroup,
   Tooltip,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
 import { RepositoryResult } from '../types/repository';
 import { TimelineBounds } from '../utils/city';
 import { CityDNA } from '../utils/city-dna';
+import { ScenePerformanceTelemetry } from './scene/types';
+import {
+  panelActionButtonSx,
+  panelChipSx,
+  panelScrollSx,
+  panelSectionSx,
+  panelSurfaceSx,
+  panelTitleSx,
+} from './panelStyles';
+import { ProgressBar } from './ProgressBar';
 import { ShareButton } from './ShareButton';
 
 interface TopControlPanelProps {
@@ -47,6 +64,7 @@ interface TopControlPanelProps {
   timelineTs: number | null;
   timelineLabel: string;
   cityDna: CityDNA | null;
+  scenePerformance: ScenePerformanceTelemetry;
   githubToken: string;
   languageFilter: string;
   authorFilter: string;
@@ -71,10 +89,25 @@ interface TopControlPanelProps {
   branchOptions: string[];
   jumpOptions: string[];
   autoTour: boolean;
+  tourMode: 'orbit' | 'drone' | 'walk';
+  followDroneIndex: number;
   liveWatch: boolean;
   showAtmosphere: boolean;
   showWeather: boolean;
   showBuilders: boolean;
+  showMinimap: boolean;
+  showInsights: boolean;
+  showBranchMap: boolean;
+  showFileCard: boolean;
+  showChat: boolean;
+  showNarrator: boolean;
+  showPostProcessing: boolean;
+  adaptivePostFx: boolean;
+  modePresetIntensity: number;
+  visualPreset: 'immersive' | 'balanced' | 'performance';
+  targetFps: 30 | 45 | 60;
+  renderProfileLock: 'auto' | 'cinematic' | 'balanced' | 'performance';
+  showFps: boolean;
   showCyberpunkOverlay: boolean;
   timeOfDay: 'auto' | 'dawn' | 'day' | 'sunset' | 'night';
   weatherMode: 'auto' | 'clear' | 'mist' | 'rain' | 'storm';
@@ -82,6 +115,7 @@ interface TopControlPanelProps {
   constructionMode: boolean;
   constructionSpeed: number;
   constructionProgress: number;
+  uiMode: 'full' | 'balanced' | 'focus';
   collapsed: boolean;
   onToggleCollapsed: () => void;
   onRepoUrlChange: (value: string) => void;
@@ -89,16 +123,34 @@ interface TopControlPanelProps {
   onStartParsing: () => void;
   onTimelineChange: (value: number) => void;
   onAutoTourChange: (value: boolean) => void;
+  onTourModeChange: (value: 'orbit' | 'drone' | 'walk') => void;
+  onFollowDroneIndexChange: (value: number) => void;
   onLiveWatchChange: (value: boolean) => void;
   onShowAtmosphereChange: (value: boolean) => void;
   onShowWeatherChange: (value: boolean) => void;
   onShowBuildersChange: (value: boolean) => void;
+  onShowMinimapChange: (value: boolean) => void;
+  onShowInsightsChange: (value: boolean) => void;
+  onShowBranchMapChange: (value: boolean) => void;
+  onShowFileCardChange: (value: boolean) => void;
+  onShowChatChange: (value: boolean) => void;
+  onShowNarratorChange: (value: boolean) => void;
+  onShowPostProcessingChange: (value: boolean) => void;
+  onAdaptivePostFxChange: (value: boolean) => void;
+  onModePresetIntensityChange: (value: number) => void;
+  onVisualPresetChange: (value: 'immersive' | 'balanced' | 'performance') => void;
+  onTargetFpsChange: (value: 30 | 45 | 60) => void;
+  onRenderProfileLockChange: (
+    value: 'auto' | 'cinematic' | 'balanced' | 'performance',
+  ) => void;
+  onShowFpsChange: (value: boolean) => void;
   onShowCyberpunkOverlayChange: (value: boolean) => void;
   onTimeOfDayChange: (value: 'auto' | 'dawn' | 'day' | 'sunset' | 'night') => void;
   onWeatherModeChange: (value: 'auto' | 'clear' | 'mist' | 'rain' | 'storm') => void;
   onDynamicAtmosphereChange: (value: boolean) => void;
   onConstructionModeChange: (value: boolean) => void;
   onConstructionSpeedChange: (value: number) => void;
+  onUiModeChange: (value: 'full' | 'balanced' | 'focus') => void;
   onLanguageFilterChange: (value: string) => void;
   onAuthorFilterChange: (value: string) => void;
   onDistrictFilterChange: (value: string) => void;
@@ -114,6 +166,7 @@ interface TopControlPanelProps {
   onExportJson: () => void;
   onExportHotspots: () => void;
   onJumpToFile: (path: string) => void;
+  onHeaderHeightChange?: (height: number) => void;
 }
 
 export function TopControlPanel({
@@ -127,6 +180,7 @@ export function TopControlPanel({
   timelineTs,
   timelineLabel,
   cityDna,
+  scenePerformance,
   githubToken,
   languageFilter,
   authorFilter,
@@ -146,10 +200,25 @@ export function TopControlPanel({
   branchOptions,
   jumpOptions,
   autoTour,
+  tourMode,
+  followDroneIndex,
   liveWatch,
   showAtmosphere,
   showWeather,
   showBuilders,
+  showMinimap,
+  showInsights,
+  showBranchMap,
+  showFileCard,
+  showChat,
+  showNarrator,
+  showPostProcessing,
+  adaptivePostFx,
+  modePresetIntensity,
+  visualPreset,
+  targetFps,
+  renderProfileLock,
+  showFps,
   showCyberpunkOverlay,
   timeOfDay,
   weatherMode,
@@ -157,6 +226,7 @@ export function TopControlPanel({
   constructionMode,
   constructionSpeed,
   constructionProgress,
+  uiMode,
   collapsed,
   onToggleCollapsed,
   onRepoUrlChange,
@@ -164,16 +234,32 @@ export function TopControlPanel({
   onStartParsing,
   onTimelineChange,
   onAutoTourChange,
+  onTourModeChange,
+  onFollowDroneIndexChange,
   onLiveWatchChange,
   onShowAtmosphereChange,
   onShowWeatherChange,
   onShowBuildersChange,
+  onShowMinimapChange,
+  onShowInsightsChange,
+  onShowBranchMapChange,
+  onShowFileCardChange,
+  onShowChatChange,
+  onShowNarratorChange,
+  onShowPostProcessingChange,
+  onAdaptivePostFxChange,
+  onModePresetIntensityChange,
+  onVisualPresetChange,
+  onTargetFpsChange,
+  onRenderProfileLockChange,
+  onShowFpsChange,
   onShowCyberpunkOverlayChange,
   onTimeOfDayChange,
   onWeatherModeChange,
   onDynamicAtmosphereChange,
   onConstructionModeChange,
   onConstructionSpeedChange,
+  onUiModeChange,
   onLanguageFilterChange,
   onAuthorFilterChange,
   onDistrictFilterChange,
@@ -189,8 +275,14 @@ export function TopControlPanel({
   onExportJson,
   onExportHotspots,
   onJumpToFile,
+  onHeaderHeightChange,
 }: TopControlPanelProps) {
+  const denseHeader = useMediaQuery('(max-width: 1580px)');
+  const veryDenseHeader = useMediaQuery('(max-width: 1360px)');
+  const ultraDenseHeader = useMediaQuery('(max-width: 1240px)');
   const [tokenVisible, setTokenVisible] = useState(false);
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  const lastHeaderHeightRef = useRef(0);
   const stackChips = data?.stack
     ? [
         ...data.stack.runtimes.slice(0, 2),
@@ -225,15 +317,82 @@ export function TopControlPanel({
 
   const hasTimeline = Boolean(data && timelineBounds && timelineTs !== null);
   const drawerOpen = !collapsed;
+  const maxDroneIndex = 9;
+  const safeFollowDroneIndex = Math.max(0, Math.min(maxDroneIndex, followDroneIndex));
+  const sectionPaperSx = { p: 1.2, ...panelSectionSx };
+  const toggleGroupSx = {
+    width: '100%',
+    flexWrap: 'wrap',
+    '& .MuiToggleButtonGroup-grouped': {
+      flex: '1 1 118px',
+      minWidth: 0,
+      whiteSpace: 'nowrap',
+    },
+  } as const;
+  const iconActionSx = {
+    ...panelActionButtonSx,
+    border: '1px solid rgba(126,224,255,0.22)',
+  };
+  const runtimeChipColor =
+    scenePerformance.runtimeProfile === 'performance'
+      ? 'warning'
+      : scenePerformance.runtimeProfile === 'balanced'
+        ? 'info'
+        : 'success';
+  const fxChipColor =
+    scenePerformance.postFxQuality === 'low'
+      ? 'warning'
+      : scenePerformance.postFxQuality === 'medium'
+        ? 'info'
+        : 'success';
+  const timelineLabelCompact = timelineLabel.length > 22
+    ? `${timelineLabel.slice(0, 21)}…`
+    : timelineLabel;
+  const fxLabel = veryDenseHeader
+    ? `FX ${scenePerformance.postFxQuality.toUpperCase()} · ${Math.round(scenePerformance.adaptiveLoadScale * 100)}%`
+    : `FX ${scenePerformance.postFxQuality.toUpperCase()} · DPR ${scenePerformance.adaptiveDpr.toFixed(2)} · Load ${Math.round(scenePerformance.adaptiveLoadScale * 100)}%`;
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     onStartParsing();
   };
 
+  useEffect(() => {
+    if (!onHeaderHeightChange) {
+      return;
+    }
+
+    const node = headerRef.current;
+    if (!node) {
+      return;
+    }
+
+    const emitHeight = () => {
+      const next = Math.max(0, Math.ceil(node.getBoundingClientRect().height));
+      if (Math.abs(next - lastHeaderHeightRef.current) < 1) {
+        return;
+      }
+      lastHeaderHeightRef.current = next;
+      onHeaderHeightChange(next);
+    };
+
+    emitHeight();
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(() => emitHeight());
+    observer?.observe(node);
+    window.addEventListener('resize', emitHeight);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', emitHeight);
+    };
+  }, [onHeaderHeightChange]);
+
   return (
     <>
       <Box
+        ref={headerRef}
         sx={{
           position: 'absolute',
           top: 0,
@@ -248,31 +407,137 @@ export function TopControlPanel({
             elevation={6}
             sx={{
               p: 1,
-              borderRadius: 2.5,
-              backdropFilter: 'blur(10px)',
-              backgroundColor: 'rgba(248,252,255,0.87)',
-              border: '1px solid rgba(120,150,190,0.24)',
               pointerEvents: 'auto',
+              ...panelSurfaceSx,
             }}
           >
             <Stack spacing={0.9}>
               <Stack
-                direction={{ xs: 'column', md: 'row' }}
+                direction={{ xs: 'column', lg: 'row' }}
                 spacing={0.9}
-                alignItems={{ xs: 'stretch', md: 'center' }}
+                alignItems={{ xs: 'stretch', lg: 'center' }}
+                sx={{
+                  flexWrap: { lg: 'wrap', xl: 'nowrap' },
+                }}
               >
-                <Stack direction="row" spacing={0.7} alignItems="center" flexWrap="wrap">
-                  <Typography variant="subtitle1" fontWeight={900}>
-                    3D Repository City
+                <Stack
+                  direction="row"
+                  spacing={0.7}
+                  alignItems="center"
+                  flexWrap="wrap"
+                  sx={{
+                    minWidth: 0,
+                    maxWidth: '100%',
+                    flex: { xs: '1 1 auto', lg: '1 1 340px', xl: '0 1 auto' },
+                  }}
+                >
+                  <Typography
+                    variant="subtitle1"
+                    sx={{
+                      fontWeight: 900,
+                      letterSpacing: '0.08em',
+                      textTransform: 'uppercase',
+                      color: '#aef3ff',
+                      fontSize: { xs: '0.9rem', sm: '0.96rem' },
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    Repo City // Neural Ops
                   </Typography>
                   {hasTimeline && (
-                    <Chip size="small" label={timelineLabel} color="primary" variant="outlined" />
+                    <Chip
+                      size="small"
+                      label={denseHeader ? timelineLabelCompact : timelineLabel}
+                      color="primary"
+                      variant="outlined"
+                      sx={{
+                        ...panelChipSx,
+                        maxWidth: denseHeader ? 178 : 228,
+                      }}
+                    />
                   )}
                   {data && (
                     <Chip
                       size="small"
                       label={`${data.files.length} files · ${data.imports.length} roads`}
                       variant="outlined"
+                      sx={{
+                        ...panelChipSx,
+                        display: {
+                          xs: 'none',
+                          lg: veryDenseHeader ? 'none' : 'inline-flex',
+                        },
+                      }}
+                    />
+                  )}
+                  <Chip
+                    size="small"
+                    color={uiMode === 'focus' ? 'warning' : uiMode === 'balanced' ? 'info' : 'default'}
+                    label={
+                      uiMode === 'focus'
+                        ? 'UI // Focus'
+                        : uiMode === 'balanced'
+                          ? 'UI // Balanced'
+                          : 'UI // Full'
+                    }
+                    variant="outlined"
+                    sx={panelChipSx}
+                  />
+                  <Chip
+                    size="small"
+                    color={runtimeChipColor}
+                    label={denseHeader ? `Render ${scenePerformance.runtimeProfile}` : `Render // ${scenePerformance.runtimeProfile}`}
+                    variant="outlined"
+                    sx={panelChipSx}
+                  />
+                  <Chip
+                    size="small"
+                    color={visualPreset === 'performance' ? 'warning' : visualPreset === 'immersive' ? 'success' : 'info'}
+                    label={`Preset // ${visualPreset}`}
+                    variant="outlined"
+                    sx={{ ...panelChipSx, display: { xs: 'none', xl: 'inline-flex' } }}
+                  />
+                  <Chip
+                    size="small"
+                    label={`Target // ${targetFps}fps`}
+                    variant="outlined"
+                    sx={{ ...panelChipSx, display: { xs: 'none', xl: 'inline-flex' } }}
+                  />
+                  <Chip
+                    size="small"
+                    color={renderProfileLock === 'auto' ? 'default' : 'secondary'}
+                    label={
+                      renderProfileLock === 'auto'
+                        ? 'Lock // auto'
+                        : `Lock // ${renderProfileLock}`
+                    }
+                    variant="outlined"
+                    sx={{
+                      ...panelChipSx,
+                      display: { xs: 'none', xl: ultraDenseHeader ? 'none' : 'inline-flex' },
+                    }}
+                  />
+                  <Chip
+                    size="small"
+                    color={fxChipColor}
+                    label={fxLabel}
+                    variant="outlined"
+                    sx={{
+                      ...panelChipSx,
+                      display: { xs: 'none', xl: ultraDenseHeader ? 'none' : 'inline-flex' },
+                      maxWidth: veryDenseHeader ? 196 : 286,
+                    }}
+                  />
+                  {scenePerformance.fps > 0 && (
+                    <Chip
+                      size="small"
+                      color={scenePerformance.fps < 30 ? 'error' : 'success'}
+                      label={`FPS ${Math.round(scenePerformance.fps)}`}
+                      variant="outlined"
+                      sx={{
+                        ...panelChipSx,
+                        display: { xs: 'inline-flex', lg: denseHeader ? 'none' : 'inline-flex' },
+                      }}
                     />
                   )}
                 </Stack>
@@ -283,9 +548,10 @@ export function TopControlPanel({
                   sx={{
                     display: 'flex',
                     gap: 0.8,
-                    flex: 1,
+                    flex: { xs: '1 1 auto', lg: '1 1 380px' },
                     minWidth: 0,
                     alignItems: 'center',
+                    width: '100%',
                   }}
                 >
                   <TextField
@@ -299,24 +565,44 @@ export function TopControlPanel({
                     type="submit"
                     variant="contained"
                     disabled={isBusy || !repoUrl.trim()}
-                    sx={{ whiteSpace: 'nowrap' }}
+                    sx={{ ...panelActionButtonSx, whiteSpace: 'nowrap', flexShrink: 0 }}
                   >
                     Построить
                   </Button>
                 </Box>
 
-                <Stack direction="row" spacing={0.4} alignItems="center" flexWrap="wrap">
+                <Stack
+                  direction="row"
+                  spacing={0.4}
+                  alignItems="center"
+                  flexWrap="wrap"
+                  sx={{
+                    minWidth: 0,
+                    flexShrink: 0,
+                    rowGap: 0.35,
+                    justifyContent: { xs: 'flex-start', lg: 'flex-end' },
+                  }}
+                >
                   {isBusy && (
                     <Chip
                       size="small"
                       color="warning"
                       label={`${Math.round(progress)}%`}
-                      sx={{ fontWeight: 700 }}
+                      sx={{
+                        ...panelChipSx,
+                        '& .MuiChip-label': {
+                          fontWeight: 700,
+                        },
+                      }}
                     />
                   )}
 
                   <Tooltip title="Controls, timeline and filters">
-                    <IconButton size="small" onClick={onToggleCollapsed}>
+                    <IconButton
+                      size="small"
+                      onClick={onToggleCollapsed}
+                      sx={iconActionSx}
+                    >
                       <Badge
                         color="secondary"
                         badgeContent={activeFilterCount > 0 ? activeFilterCount : 0}
@@ -330,22 +616,38 @@ export function TopControlPanel({
                   <ShareButton repoUrl={repoUrl} compact />
 
                   <Tooltip title="Copy executive summary">
-                    <IconButton size="small" onClick={onExportSummary}>
+                    <IconButton
+                      size="small"
+                      onClick={onExportSummary}
+                      sx={{ ...iconActionSx, display: { xs: 'none', sm: 'inline-flex' } }}
+                    >
                       <SummarizeRoundedIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
                   <Tooltip title="Export scene PNG">
-                    <IconButton size="small" onClick={onExportPng}>
+                    <IconButton
+                      size="small"
+                      onClick={onExportPng}
+                      sx={{ ...iconActionSx, display: { xs: 'none', sm: 'inline-flex' } }}
+                    >
                       <ImageRoundedIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
                   <Tooltip title="Export JSON report">
-                    <IconButton size="small" onClick={onExportJson}>
+                    <IconButton
+                      size="small"
+                      onClick={onExportJson}
+                      sx={{ ...iconActionSx, display: { xs: 'none', sm: 'inline-flex' } }}
+                    >
                       <DataObjectRoundedIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
                   <Tooltip title="Export risk hotspots">
-                    <IconButton size="small" onClick={onExportHotspots}>
+                    <IconButton
+                      size="small"
+                      onClick={onExportHotspots}
+                      sx={{ ...iconActionSx, display: { xs: 'none', sm: 'inline-flex' } }}
+                    >
                       <WarningAmberRoundedIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
@@ -353,16 +655,13 @@ export function TopControlPanel({
               </Stack>
 
               {isBusy && (
-                <Box>
-                  <LinearProgress
-                    variant="determinate"
-                    value={Math.max(1, Math.min(100, progress))}
-                    sx={{ height: 6, borderRadius: 6 }}
-                  />
-                  <Typography variant="caption" color="text.secondary">
-                    {message || 'Parsing repository...'}
-                  </Typography>
-                </Box>
+                <ProgressBar
+                  progress={progress}
+                  title="Repository Parsing"
+                  subtitle="Commit graph to city topology"
+                  message={message || 'Parsing repository...'}
+                  sx={{ mt: 0.3 }}
+                />
               )}
 
               {collapsed && error && <Alert severity="error">{error}</Alert>}
@@ -380,26 +679,160 @@ export function TopControlPanel({
           sx: {
             width: { xs: '100%', sm: 420, md: 470 },
             p: 1.5,
-            backgroundColor: 'rgba(250,253,255,0.97)',
-            backdropFilter: 'blur(10px)',
+            ...panelSurfaceSx,
           },
         }}
       >
-        <Stack spacing={1.2} sx={{ height: '100%', overflowY: 'auto' }}>
+        <Stack spacing={1.2} sx={{ height: '100%', overflowY: 'auto', ...panelScrollSx }}>
           <Stack direction="row" justifyContent="space-between" alignItems="center">
             <Typography variant="h6" fontWeight={900}>
-              Controls
+              Command Deck
             </Typography>
-            <IconButton size="small" onClick={onToggleCollapsed}>
+            <IconButton size="small" sx={iconActionSx} onClick={onToggleCollapsed}>
               <CloseRoundedIcon fontSize="small" />
             </IconButton>
           </Stack>
 
           {error && <Alert severity="error">{error}</Alert>}
 
-          <Paper variant="outlined" sx={{ p: 1.2 }}>
+          <Paper variant="outlined" sx={sectionPaperSx}>
             <Stack spacing={0.8}>
-              <Typography variant="subtitle2" fontWeight={800}>
+              <Typography variant="subtitle2" fontWeight={800} sx={panelTitleSx}>
+                Interface mode
+              </Typography>
+              <ToggleButtonGroup
+                size="small"
+                value={uiMode}
+                exclusive
+                sx={toggleGroupSx}
+                onChange={(_, value) => {
+                  if (value) {
+                    onUiModeChange(value as 'full' | 'balanced' | 'focus');
+                  }
+                }}
+              >
+                <ToggleButton value="full">Full</ToggleButton>
+                <ToggleButton value="balanced">Balanced</ToggleButton>
+                <ToggleButton value="focus">Focus</ToggleButton>
+              </ToggleButtonGroup>
+              <Typography variant="caption" color="text.secondary">
+                `H` toggles Focus/Full. `Shift + H` cycles all modes.
+              </Typography>
+              <ToggleButtonGroup
+                size="small"
+                value={visualPreset}
+                exclusive
+                sx={toggleGroupSx}
+                onChange={(_, value) => {
+                  if (value) {
+                    onVisualPresetChange(
+                      value as 'immersive' | 'balanced' | 'performance',
+                    );
+                  }
+                }}
+              >
+                <ToggleButton value="immersive">Immersive</ToggleButton>
+                <ToggleButton value="balanced">Balanced</ToggleButton>
+                <ToggleButton value="performance">Performance</ToggleButton>
+              </ToggleButtonGroup>
+              <Typography variant="caption" color="text.secondary">
+                Render preset: cinematic density/FX profile cap for quick tuning.
+              </Typography>
+            </Stack>
+          </Paper>
+
+          <Paper variant="outlined" sx={sectionPaperSx}>
+            <Stack spacing={0.8}>
+              <Typography variant="subtitle2" fontWeight={800} sx={panelTitleSx}>
+                Runtime telemetry
+              </Typography>
+              <Stack direction="row" spacing={0.6} flexWrap="wrap">
+                <Chip
+                  size="small"
+                  color={runtimeChipColor}
+                  label={`Profile: ${scenePerformance.runtimeProfile}`}
+                  variant="outlined"
+                  sx={panelChipSx}
+                />
+                <Chip
+                  size="small"
+                  color={fxChipColor}
+                  label={`PostFX: ${scenePerformance.postFxQuality}`}
+                  variant="outlined"
+                  sx={panelChipSx}
+                />
+                <Chip
+                  size="small"
+                  label={`DPR: ${scenePerformance.adaptiveDpr.toFixed(2)}`}
+                  variant="outlined"
+                  sx={panelChipSx}
+                />
+                <Chip
+                  size="small"
+                  label={`Load: ${Math.round(scenePerformance.adaptiveLoadScale * 100)}%`}
+                  variant="outlined"
+                  sx={panelChipSx}
+                />
+                <Chip
+                  size="small"
+                  color={scenePerformance.fps < 30 ? 'error' : 'success'}
+                  label={
+                    scenePerformance.fps > 0
+                      ? `FPS: ${Math.round(scenePerformance.fps)}`
+                      : 'FPS: ...'
+                  }
+                  variant="outlined"
+                  sx={panelChipSx}
+                />
+              </Stack>
+              <ToggleButtonGroup
+                size="small"
+                value={targetFps}
+                exclusive
+                sx={toggleGroupSx}
+                onChange={(_, value) => {
+                  if (value === 30 || value === 45 || value === 60) {
+                    onTargetFpsChange(value as 30 | 45 | 60);
+                  }
+                }}
+              >
+                <ToggleButton value={30}>Target 30</ToggleButton>
+                <ToggleButton value={45}>Target 45</ToggleButton>
+                <ToggleButton value={60}>Target 60</ToggleButton>
+              </ToggleButtonGroup>
+              <ToggleButtonGroup
+                size="small"
+                value={renderProfileLock}
+                exclusive
+                sx={toggleGroupSx}
+                onChange={(_, value) => {
+                  if (
+                    value === 'auto' ||
+                    value === 'cinematic' ||
+                    value === 'balanced' ||
+                    value === 'performance'
+                  ) {
+                    onRenderProfileLockChange(
+                      value as 'auto' | 'cinematic' | 'balanced' | 'performance',
+                    );
+                  }
+                }}
+              >
+                <ToggleButton value="auto">Lock Auto</ToggleButton>
+                <ToggleButton value="cinematic">Lock Cine</ToggleButton>
+                <ToggleButton value="balanced">Lock Balanced</ToggleButton>
+                <ToggleButton value="performance">Lock Perf</ToggleButton>
+              </ToggleButtonGroup>
+              <Typography variant="caption" color="text.secondary">
+                Goal: keep FPS above 30 while preserving atmosphere and mode readability.
+                Lock fixes render profile for predictable visuals.
+              </Typography>
+            </Stack>
+          </Paper>
+
+          <Paper variant="outlined" sx={sectionPaperSx}>
+            <Stack spacing={0.8}>
+              <Typography variant="subtitle2" fontWeight={800} sx={panelTitleSx}>
                 GitHub token (optional)
               </Typography>
               <TextField
@@ -430,8 +863,17 @@ export function TopControlPanel({
               />
               {githubToken.trim().length > 0 && (
                 <Stack direction="row" spacing={0.6}>
-                  <Chip size="small" color="success" label="Custom token enabled" />
-                  <Button size="small" onClick={() => onGithubTokenChange('')}>
+                  <Chip
+                    size="small"
+                    color="success"
+                    label="Custom token enabled"
+                    sx={panelChipSx}
+                  />
+                  <Button
+                    size="small"
+                    sx={panelActionButtonSx}
+                    onClick={() => onGithubTokenChange('')}
+                  >
                     Clear
                   </Button>
                 </Stack>
@@ -440,21 +882,35 @@ export function TopControlPanel({
           </Paper>
 
           {data && (
-            <Paper variant="outlined" sx={{ p: 1.2 }}>
+            <Paper variant="outlined" sx={sectionPaperSx}>
               <Stack direction="row" spacing={0.6} flexWrap="wrap">
-                <Chip size="small" label={`Files: ${data.files.length}`} color="primary" variant="outlined" />
-                <Chip size="small" label={`Roads: ${data.imports.length}`} color="secondary" variant="outlined" />
+                <Chip
+                  size="small"
+                  label={`Files: ${data.files.length}`}
+                  color="primary"
+                  variant="outlined"
+                  sx={panelChipSx}
+                />
+                <Chip
+                  size="small"
+                  label={`Roads: ${data.imports.length}`}
+                  color="secondary"
+                  variant="outlined"
+                  sx={panelChipSx}
+                />
                 <Chip
                   size="small"
                   label={`Branches: ${data.branches?.length ?? 0}`}
                   color="success"
                   variant="outlined"
+                  sx={panelChipSx}
                 />
                 {data.analysis && (
                   <Chip
                     size="small"
                     label={`GitHub req: ${data.analysis.diagnostics.githubRequests}`}
                     variant="outlined"
+                    sx={panelChipSx}
                   />
                 )}
               </Stack>
@@ -463,13 +919,35 @@ export function TopControlPanel({
                 <Stack direction="row" spacing={0.6} flexWrap="wrap" mt={0.9}>
                   {cityDna && (
                     <>
-                      <Chip size="small" label={`Layout: ${cityDna.layout}`} variant="outlined" />
-                      <Chip size="small" label={`Style: ${cityDna.architecture}`} variant="outlined" />
-                      <Chip size="small" label={`Lang: ${cityDna.metrics.primaryLanguage}`} variant="outlined" />
+                      <Chip
+                        size="small"
+                        label={`Layout: ${cityDna.layout}`}
+                        variant="outlined"
+                        sx={panelChipSx}
+                      />
+                      <Chip
+                        size="small"
+                        label={`Style: ${cityDna.architecture}`}
+                        variant="outlined"
+                        sx={panelChipSx}
+                      />
+                      <Chip
+                        size="small"
+                        label={`Lang: ${cityDna.metrics.primaryLanguage}`}
+                        variant="outlined"
+                        sx={panelChipSx}
+                      />
                     </>
                   )}
                   {stackChips.map((chip) => (
-                    <Chip key={chip} size="small" label={chip} color="info" variant="outlined" />
+                    <Chip
+                      key={chip}
+                      size="small"
+                      label={chip}
+                      color="info"
+                      variant="outlined"
+                      sx={panelChipSx}
+                    />
                   ))}
                 </Stack>
               )}
@@ -477,9 +955,9 @@ export function TopControlPanel({
           )}
 
           {hasTimeline && timelineBounds && timelineTs !== null && (
-            <Paper variant="outlined" sx={{ p: 1.2 }}>
+            <Paper variant="outlined" sx={sectionPaperSx}>
               <Stack spacing={1}>
-                <Typography variant="subtitle2" fontWeight={800}>
+                <Typography variant="subtitle2" fontWeight={800} sx={panelTitleSx}>
                   Time Machine
                 </Typography>
 
@@ -502,6 +980,7 @@ export function TopControlPanel({
                   size="small"
                   value={viewMode}
                   exclusive
+                  sx={toggleGroupSx}
                   onChange={(_, value) => {
                     if (value) {
                       onViewModeChange(value as 'overview' | 'architecture' | 'risk' | 'stack');
@@ -513,6 +992,15 @@ export function TopControlPanel({
                   <ToggleButton value="risk">Risk</ToggleButton>
                   <ToggleButton value="stack">Stack</ToggleButton>
                 </ToggleButtonGroup>
+                <Typography variant="caption" color="text.secondary">
+                  {viewMode === 'overview'
+                    ? 'Balanced scene: branches, traffic, atmosphere.'
+                    : viewMode === 'architecture'
+                      ? 'Architecture focus: denser roads and dependency flow.'
+                      : viewMode === 'risk'
+                        ? 'Risk focus: weather/risk overlays with calmer transport.'
+                        : 'Stack focus: stack towers and layer-colored buildings.'}
+                </Typography>
 
                 <FormControlLabel
                   control={
@@ -531,6 +1019,7 @@ export function TopControlPanel({
                       size="small"
                       value={compareMode}
                       exclusive
+                      sx={toggleGroupSx}
                       onChange={(_, value) => {
                         if (value) {
                           onCompareModeChange(value as 'ghost' | 'split');
@@ -563,21 +1052,25 @@ export function TopControlPanel({
                           size="small"
                           variant="outlined"
                           label={`Δ files ${compareSummary.filesDelta >= 0 ? '+' : ''}${compareSummary.filesDelta}`}
+                          sx={panelChipSx}
                         />
                         <Chip
                           size="small"
                           variant="outlined"
                           label={`Δ roads ${compareSummary.roadsDelta >= 0 ? '+' : ''}${compareSummary.roadsDelta}`}
+                          sx={panelChipSx}
                         />
                         <Chip
                           size="small"
                           variant="outlined"
                           label={`Δ risk ${compareSummary.riskDelta >= 0 ? '+' : ''}${Math.round(compareSummary.riskDelta * 100)}%`}
+                          sx={panelChipSx}
                         />
                         <Chip
                           size="small"
                           variant="outlined"
                           label={`Δ hubs ${compareSummary.hubsDelta >= 0 ? '+' : ''}${compareSummary.hubsDelta}`}
+                          sx={panelChipSx}
                         />
                       </Stack>
                     )}
@@ -587,9 +1080,9 @@ export function TopControlPanel({
             </Paper>
           )}
 
-          <Paper variant="outlined" sx={{ p: 1.2 }}>
+          <Paper variant="outlined" sx={sectionPaperSx}>
             <Stack spacing={0.6}>
-              <Typography variant="subtitle2" fontWeight={800}>
+              <Typography variant="subtitle2" fontWeight={800} sx={panelTitleSx}>
                 Scene toggles
               </Typography>
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={1}>
@@ -656,13 +1149,13 @@ export function TopControlPanel({
               {constructionMode && (
                 <Stack spacing={0.3}>
                   <Typography variant="caption" color="text.secondary">
-                    Build speed: {constructionSpeed.toFixed(1)}x
+                    Build speed: {constructionSpeed.toFixed(2)}x
                   </Typography>
                   <Slider
                     size="small"
-                    min={0.5}
-                    max={3}
-                    step={0.1}
+                    min={0.2}
+                    max={2}
+                    step={0.05}
                     value={constructionSpeed}
                     onChange={(_, value) => onConstructionSpeedChange(value as number)}
                   />
@@ -676,6 +1169,60 @@ export function TopControlPanel({
                   />
                 </Stack>
               )}
+
+              <Stack spacing={0.3}>
+                <Typography variant="caption" color="text.secondary">
+                  Cinematic preset intensity: {Math.round(modePresetIntensity * 100)}%
+                </Typography>
+                <Slider
+                  size="small"
+                  min={0.55}
+                  max={1.8}
+                  step={0.05}
+                  value={modePresetIntensity}
+                  onChange={(_, value) =>
+                    onModePresetIntensityChange(value as number)
+                  }
+                />
+              </Stack>
+
+              <TextField
+                select
+                size="small"
+                label="Tour mode"
+                value={tourMode}
+                onChange={(event) =>
+                  onTourModeChange(event.target.value as 'orbit' | 'drone' | 'walk')
+                }
+                sx={{ minWidth: 150 }}
+              >
+                <MenuItem value="orbit">Orbit</MenuItem>
+                <MenuItem value="drone">Follow drone</MenuItem>
+                <MenuItem value="walk">Walk surface</MenuItem>
+              </TextField>
+
+              {(tourMode === 'drone' || tourMode === 'walk') && (
+                <Stack spacing={0.3}>
+                  <Typography variant="caption" color="text.secondary">
+                    Drone anchor: #{safeFollowDroneIndex + 1}
+                  </Typography>
+                  <Slider
+                    size="small"
+                    min={0}
+                    max={maxDroneIndex}
+                    step={1}
+                    value={safeFollowDroneIndex}
+                    onChange={(_, value) => onFollowDroneIndexChange(value as number)}
+                  />
+                </Stack>
+              )}
+
+              {tourMode === 'walk' && (
+                <Typography variant="caption" color="text.secondary">
+                  Walk controls: click scene + mouse look, WASD move, Shift sprint, E enter building, Q/Esc exit.
+                </Typography>
+              )}
+
               <FormControlLabel
                 control={<Switch checked={autoTour} onChange={(_, checked) => onAutoTourChange(checked)} />}
                 label="Auto tour"
@@ -704,6 +1251,64 @@ export function TopControlPanel({
                 sx={{ m: 0 }}
               />
               <FormControlLabel
+                control={<Switch checked={showMinimap} onChange={(_, checked) => onShowMinimapChange(checked)} />}
+                label="Minimap"
+                sx={{ m: 0 }}
+              />
+              <FormControlLabel
+                control={<Switch checked={showInsights} onChange={(_, checked) => onShowInsightsChange(checked)} />}
+                label="Insights panel"
+                sx={{ m: 0 }}
+              />
+              <FormControlLabel
+                control={<Switch checked={showBranchMap} onChange={(_, checked) => onShowBranchMapChange(checked)} />}
+                label="Branch panel"
+                sx={{ m: 0 }}
+              />
+              <FormControlLabel
+                control={<Switch checked={showFileCard} onChange={(_, checked) => onShowFileCardChange(checked)} />}
+                label="File details card"
+                sx={{ m: 0 }}
+              />
+              <FormControlLabel
+                control={<Switch checked={showChat} onChange={(_, checked) => onShowChatChange(checked)} />}
+                label="Chat dock"
+                sx={{ m: 0 }}
+              />
+              <FormControlLabel
+                control={
+                  <Switch checked={showNarrator} onChange={(_, checked) => onShowNarratorChange(checked)} />
+                }
+                label="LLM narrator"
+                sx={{ m: 0 }}
+              />
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={showPostProcessing}
+                    onChange={(_, checked) => onShowPostProcessingChange(checked)}
+                  />
+                }
+                label="Post FX"
+                sx={{ m: 0 }}
+              />
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={adaptivePostFx}
+                    onChange={(_, checked) => onAdaptivePostFxChange(checked)}
+                    disabled={!showPostProcessing}
+                  />
+                }
+                label="Adaptive Post FX (FPS)"
+                sx={{ m: 0 }}
+              />
+              <FormControlLabel
+                control={<Switch checked={showFps} onChange={(_, checked) => onShowFpsChange(checked)} />}
+                label="FPS indicator (on demand)"
+                sx={{ m: 0 }}
+              />
+              <FormControlLabel
                 control={
                   <Switch
                     checked={showCyberpunkOverlay}
@@ -717,9 +1322,9 @@ export function TopControlPanel({
           </Paper>
 
           {data && (
-            <Paper variant="outlined" sx={{ p: 1.2 }}>
+            <Paper variant="outlined" sx={sectionPaperSx}>
               <Stack spacing={1}>
-                <Typography variant="subtitle2" fontWeight={800}>
+                <Typography variant="subtitle2" fontWeight={800} sx={panelTitleSx}>
                   Filters and search
                 </Typography>
 
@@ -833,15 +1438,33 @@ export function TopControlPanel({
             </Paper>
           )}
 
-          <Paper variant="outlined" sx={{ p: 1.2 }}>
+          <Paper variant="outlined" sx={sectionPaperSx}>
             <Stack direction="row" spacing={0.7} flexWrap="wrap">
-              <Button size="small" variant="outlined" startIcon={<SummarizeRoundedIcon />} onClick={onExportSummary}>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<SummarizeRoundedIcon />}
+                sx={panelActionButtonSx}
+                onClick={onExportSummary}
+              >
                 Summary
               </Button>
-              <Button size="small" variant="outlined" startIcon={<ImageRoundedIcon />} onClick={onExportPng}>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<ImageRoundedIcon />}
+                sx={panelActionButtonSx}
+                onClick={onExportPng}
+              >
                 PNG
               </Button>
-              <Button size="small" variant="outlined" startIcon={<DataObjectRoundedIcon />} onClick={onExportJson}>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<DataObjectRoundedIcon />}
+                sx={panelActionButtonSx}
+                onClick={onExportJson}
+              >
                 JSON
               </Button>
               <Button
@@ -849,6 +1472,7 @@ export function TopControlPanel({
                 variant="outlined"
                 color="warning"
                 startIcon={<WarningAmberRoundedIcon />}
+                sx={panelActionButtonSx}
                 onClick={onExportHotspots}
               >
                 Hotspots

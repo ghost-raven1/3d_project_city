@@ -1,5 +1,6 @@
 import { FormEvent } from 'react';
 import { Box, Button, Paper, TextField, Typography } from '@mui/material';
+import { panelSurfaceSx } from './panelStyles';
 
 interface RepoFormProps {
   repoUrl: string;
@@ -29,13 +30,20 @@ export function RepoForm({
         flexDirection: { xs: 'column', md: 'row' },
         gap: 1.5,
         alignItems: { xs: 'stretch', md: 'center' },
-        backdropFilter: 'blur(4px)',
-        backgroundColor: 'rgba(255,255,255,0.85)',
+        ...panelSurfaceSx,
       }}
       elevation={2}
     >
       <Box sx={{ flexGrow: 1 }}>
-        <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+        <Typography
+          variant="subtitle2"
+          sx={{
+            mb: 0.5,
+            letterSpacing: '0.06em',
+            textTransform: 'uppercase',
+            color: '#b2f2ff',
+          }}
+        >
           Public GitHub repository URL
         </Typography>
         <TextField

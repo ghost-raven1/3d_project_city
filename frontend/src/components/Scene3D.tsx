@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef } from 'react';
+import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
@@ -33,14 +33,36 @@ import { AirTraffic } from './scene/AirTraffic';
 import { BranchOrbits } from './scene/BranchOrbits';
 import { BuilderDrones } from './scene/BuilderDrones';
 import { CameraDirector } from './scene/CameraDirector';
+import { CityActivities } from './scene/CityActivities';
 import { CityTerrain } from './scene/CityTerrain';
 import { ComparisonOverlay } from './scene/ComparisonOverlay';
 import { CyberpunkAtmosphere } from './scene/CyberpunkAtmosphere';
 import { DistrictOverlays } from './scene/DistrictOverlays';
+import { GroundEventAgents } from './scene/GroundEventAgents';
+import { HotspotBillboards } from './scene/HotspotBillboards';
 import { InsightSignals } from './scene/InsightSignals';
+import { LivePointers } from './scene/LivePointers';
+import { ModeSignatureLayer } from './scene/ModeSignatureLayer';
+import { ProjectEventSignals } from './scene/ProjectEventSignals';
+import { ProjectEventRoutes } from './scene/ProjectEventRoutes';
 import { RoadNetwork } from './scene/RoadNetwork';
 import { StackPassportTowers } from './scene/StackPassportTowers';
-import { DistrictInfo, ImportRoadSegment, TourPoint } from './scene/types';
+import {
+  BuildingFootprint,
+  ConstructionWindow,
+  DistrictInfo,
+  ImportRoadSegment,
+  PostFxQuality,
+  PointerSample,
+  ProjectCityEvent,
+  RuntimeQualityProfile,
+  ScenePerformanceTelemetry,
+  SceneViewMode,
+  ScenePointer,
+  TourMode,
+  TourPoint,
+} from './scene/types';
+import { getSceneModePreset } from './scene/view-mode-presets';
 
 interface Scene3DProps {
   files: PositionedFileHistory[];
@@ -52,7 +74,7 @@ interface Scene3DProps {
   riskByPath: Map<string, FileRiskProfile>;
   hoveredPath: string | null;
   selectedPath: string | null;
-  viewMode: 'overview' | 'architecture' | 'risk' | 'stack';
+  viewMode: SceneViewMode;
   compareEnabled: boolean;
   compareMode: 'ghost' | 'split';
   compareFiles: PositionedFileHistory[];
@@ -60,14 +82,30 @@ interface Scene3DProps {
   showAtmosphere: boolean;
   showWeather: boolean;
   showBuilders: boolean;
+  showPostProcessing: boolean;
+  adaptivePostFx: boolean;
+  modePresetIntensity: number;
+  visualPreset: 'immersive' | 'balanced' | 'performance';
+  targetFps: 30 | 45 | 60;
+  renderProfileLock: 'auto' | 'cinematic' | 'balanced' | 'performance';
+  showFps: boolean;
+  tourMode: TourMode;
+  followDroneIndex: number;
+  livePointers: ScenePointer[];
   timeOfDay: 'auto' | 'dawn' | 'day' | 'sunset' | 'night';
   weatherMode: 'auto' | 'clear' | 'mist' | 'rain' | 'storm';
   totalCommitsByPath: Map<string, number>;
+  constructionWindowByPath: Map<string, ConstructionWindow>;
   constructionMode: boolean;
   constructionProgress: number;
   onHover: (path: string | null) => void;
   onSelect: (path: string | null) => void;
   onCaptureReady?: (capture: (() => Promise<Blob | null>) | null) => void;
+  onFpsUpdate?: (fps: number) => void;
+  onPerformanceTelemetry?: (telemetry: ScenePerformanceTelemetry) => void;
+  onFollowDroneChange?: (index: number) => void;
+  onWalkBuildingChange?: (path: string | null) => void;
+  onPointerSample?: (sample: PointerSample) => void;
 }
 
 type ResolvedTimeOfDay = 'dawn' | 'day' | 'sunset' | 'night';
@@ -83,6 +121,7 @@ interface AtmospherePreset {
   pointSun: number;
   fogNear: number;
   fogFar: number;
+  exposure: number;
   wetnessBoost: number;
 }
 
@@ -137,10 +176,69 @@ function resolveWeatherMode(
   return 'clear';
 }
 
+const releaseMessagePattern =
+  /(\brelease\b|\bdeploy\b|\bpublish\b|\bversion\b|\bmilestone\b|\btag\b|\bv\d+\.\d+|\brc\b)/i;
+const incidentMessagePattern =
+  /(\bincident\b|\boutage\b|\bregression\b|\brollback\b|\bpanic\b|\bfailure\b|\bhotfix\b|\bbug\b)/i;
+const recoveryMessagePattern =
+  /(\bfix\b|\bstabil\w*\b|\brecover\w*\b|\bharden\w*\b|\bcleanup\b|\brefactor\b)/i;
+const flashMessagePattern =
+  /(\bperf\b|\boptimi\w*\b|\brewrite\b|\bmajor\b|\bmigration\b|\bchore\b)/i;
+
+const PostProcessingLayerLazy = lazy(async () => {
+  const module = await import('./scene/PostProcessingLayer');
+  return { default: module.PostProcessingLayer };
+});
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function blendHex(colorA: string, colorB: string, factor: number): string {
+  const mixed = new Color(colorA).lerp(
+    new Color(colorB),
+    Math.max(0, Math.min(1, factor)),
+  );
+  return `#${mixed.getHexString()}`;
+}
+
+function blendFromBase(base: number, target: number, intensity: number): number {
+  return base + (target - base) * intensity;
+}
+
+const qualityOrder: Record<PostFxQuality, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+};
+
+function minQuality(a: PostFxQuality, b: PostFxQuality): PostFxQuality {
+  return qualityOrder[a] <= qualityOrder[b] ? a : b;
+}
+
+const loadScaleLevels = [0.48, 0.56, 0.66, 0.76, 0.88, 0.94, 1] as const;
+
+function loadScaleLevelIndex(scale: number): number {
+  let bestIndex = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  loadScaleLevels.forEach((level, index) => {
+    const distance = Math.abs(level - scale);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  });
+
+  return bestIndex;
+}
+
 function SceneLightingRig({
   preset,
   palette,
   cityBounds,
+  shadowsEnabled,
+  shadowMapSize,
 }: {
   preset: AtmospherePreset;
   palette: {
@@ -152,8 +250,10 @@ function SceneLightingRig({
     centerZ: number;
     size: number;
   };
+  shadowsEnabled: boolean;
+  shadowMapSize: number;
 }) {
-  const { scene } = useThree();
+  const { scene, gl } = useThree();
   const ambientRef = useRef<AmbientLight | null>(null);
   const hemisphereRef = useRef<HemisphereLight | null>(null);
   const directionalRef = useRef<DirectionalLight | null>(null);
@@ -180,6 +280,7 @@ function SceneLightingRig({
       scene.fog.near += (preset.fogNear - scene.fog.near) * blend;
       scene.fog.far += (preset.fogFar - scene.fog.far) * blend;
     }
+    gl.toneMappingExposure += (preset.exposure - gl.toneMappingExposure) * blend;
 
     if (ambientRef.current) {
       ambientRef.current.intensity += (preset.ambient - ambientRef.current.intensity) * blend;
@@ -216,9 +317,9 @@ function SceneLightingRig({
         intensity={preset.directional}
         color={palette.sun}
         position={[52, 60, 38]}
-        castShadow
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
+        castShadow={shadowsEnabled}
+        shadow-mapSize-width={shadowMapSize}
+        shadow-mapSize-height={shadowMapSize}
       />
       <pointLight
         ref={accentPointRef}
@@ -314,6 +415,333 @@ function CaptureBridge({
   return null;
 }
 
+function FpsProbe({
+  enabled,
+  onFpsUpdate,
+}: {
+  enabled: boolean;
+  onFpsUpdate?: (fps: number) => void;
+}) {
+  const elapsedRef = useRef(0);
+  const framesRef = useRef(0);
+
+  useEffect(() => {
+    if (!enabled && onFpsUpdate) {
+      onFpsUpdate(0);
+    }
+  }, [enabled, onFpsUpdate]);
+
+  useFrame((_, delta) => {
+    if (!enabled || !onFpsUpdate) {
+      return;
+    }
+
+    elapsedRef.current += delta;
+    framesRef.current += 1;
+    if (elapsedRef.current >= 0.5) {
+      onFpsUpdate(framesRef.current / Math.max(0.0001, elapsedRef.current));
+      elapsedRef.current = 0;
+      framesRef.current = 0;
+    }
+  });
+
+  return null;
+}
+
+function AdaptivePerformanceProbe({
+  enabled,
+  adaptive,
+  targetFps,
+  renderProfileLock,
+  onQualityChange,
+  onRuntimeProfileChange,
+  onDprChange,
+  onLoadScaleChange,
+  onTelemetry,
+}: {
+  enabled: boolean;
+  adaptive: boolean;
+  targetFps: 30 | 45 | 60;
+  renderProfileLock: 'auto' | 'cinematic' | 'balanced' | 'performance';
+  onQualityChange: (quality: PostFxQuality) => void;
+  onRuntimeProfileChange: (profile: RuntimeQualityProfile) => void;
+  onDprChange: (dpr: number) => void;
+  onLoadScaleChange: (scale: number) => void;
+  onTelemetry: (telemetry: ScenePerformanceTelemetry) => void;
+}) {
+  const elapsedRef = useRef(0);
+  const framesRef = useRef(0);
+  const qualityRef = useRef<PostFxQuality>('high');
+  const profileRef = useRef<RuntimeQualityProfile>('cinematic');
+  const dprRef = useRef(1.45);
+  const loadScaleRef = useRef(1);
+  const emaFpsRef = useRef<number | null>(null);
+  const cooldownRef = useRef(0);
+  const desiredFps = Math.max(30, Math.min(60, targetFps));
+  const lockedProfile = renderProfileLock === 'auto' ? null : renderProfileLock;
+  const thresholds = useMemo(() => {
+    const forcePerformance = Math.max(18, desiredFps - 15);
+    const profileCinematicDown = Math.max(24, desiredFps - 10);
+    const profileBalancedDown = Math.max(20, desiredFps - 14);
+    const profilePerformanceUp = desiredFps - 4;
+    const profileBalancedUp = desiredFps + 6;
+
+    const qualityHighDown = desiredFps - 4;
+    const qualityMediumDown = Math.max(20, desiredFps - 12);
+    const qualityLowUp = desiredFps - 2;
+    const qualityMediumUp = desiredFps + 10;
+
+    const dprLower = desiredFps - 10;
+    const dprUpper = desiredFps + 11;
+
+    const dropOffsets = [-23, -19, -15, -11, -5, 3];
+    const riseOffsets = [-21, -16, -12, -7, 0, 8];
+    const dropFloors = [18, 22, 26, 30, 34, 42];
+    const riseFloors = [20, 24, 28, 32, 38, 46];
+    const loadDrop = dropOffsets.map((offset, index) =>
+      Math.max(dropFloors[index] ?? 18, desiredFps + offset),
+    );
+    const loadRise = riseOffsets.map((offset, index) =>
+      Math.max(riseFloors[index] ?? 20, desiredFps + offset),
+    );
+
+    return {
+      forcePerformance,
+      profileCinematicDown,
+      profileBalancedDown,
+      profilePerformanceUp,
+      profileBalancedUp,
+      qualityHighDown,
+      qualityMediumDown,
+      qualityLowUp,
+      qualityMediumUp,
+      dprLower,
+      dprUpper,
+      loadDrop,
+      loadRise,
+    };
+  }, [desiredFps]);
+
+  useEffect(() => {
+    const initialProfile: RuntimeQualityProfile = lockedProfile ?? 'cinematic';
+    const initialQuality: PostFxQuality =
+      initialProfile === 'cinematic'
+        ? 'high'
+        : initialProfile === 'balanced'
+          ? 'medium'
+          : 'low';
+    const initialDpr = initialProfile === 'cinematic' ? 1.45 : initialProfile === 'balanced' ? 1.1 : 0.92;
+    const initialLoadScale = 1;
+    elapsedRef.current = 0;
+    framesRef.current = 0;
+    qualityRef.current = initialQuality;
+    profileRef.current = initialProfile;
+    dprRef.current = initialDpr;
+    loadScaleRef.current = initialLoadScale;
+    emaFpsRef.current = null;
+    cooldownRef.current = 0;
+    onQualityChange(initialQuality);
+    onRuntimeProfileChange(initialProfile);
+    onDprChange(initialDpr);
+    onLoadScaleChange(initialLoadScale);
+    onTelemetry({
+      fps: 0,
+      runtimeProfile: initialProfile,
+      postFxQuality: initialQuality,
+      adaptiveDpr: initialDpr,
+      adaptiveLoadScale: initialLoadScale,
+    });
+  }, [
+    adaptive,
+    enabled,
+    desiredFps,
+    lockedProfile,
+    onDprChange,
+    onLoadScaleChange,
+    onQualityChange,
+    onRuntimeProfileChange,
+    onTelemetry,
+  ]);
+
+  useFrame((_, delta) => {
+    if (!enabled) {
+      return;
+    }
+
+    elapsedRef.current += delta;
+    framesRef.current += 1;
+
+    if (elapsedRef.current < 0.75) {
+      return;
+    }
+
+    const sampleFps = framesRef.current / Math.max(0.001, elapsedRef.current);
+    framesRef.current = 0;
+    elapsedRef.current = 0;
+
+    emaFpsRef.current =
+      emaFpsRef.current === null
+        ? sampleFps
+        : emaFpsRef.current * 0.72 + sampleFps * 0.28;
+    const smoothFps = emaFpsRef.current;
+
+    const coolingDown =
+      cooldownRef.current > 0 && smoothFps > thresholds.forcePerformance;
+    if (coolingDown) {
+      cooldownRef.current = Math.max(0, cooldownRef.current - 0.75);
+      onTelemetry({
+        fps: smoothFps,
+        runtimeProfile: profileRef.current,
+        postFxQuality: qualityRef.current,
+        adaptiveDpr: dprRef.current,
+        adaptiveLoadScale: loadScaleRef.current,
+      });
+      return;
+    }
+    cooldownRef.current = Math.max(0, cooldownRef.current - 0.75);
+
+    const allowUpgrades = adaptive && !lockedProfile;
+    const currentQuality = qualityRef.current;
+    const currentProfile = profileRef.current;
+    const currentDpr = dprRef.current;
+
+    let nextQuality = currentQuality;
+    let nextProfile = currentProfile;
+    let nextLoadScale = loadScaleRef.current;
+
+    if (smoothFps < thresholds.forcePerformance) {
+      nextProfile = 'performance';
+      nextQuality = 'low';
+    } else {
+      if (currentProfile === 'cinematic') {
+        if (smoothFps < thresholds.profileCinematicDown) {
+          nextProfile = 'balanced';
+        }
+      } else if (currentProfile === 'balanced') {
+        if (smoothFps < thresholds.profileBalancedDown) {
+          nextProfile = 'performance';
+        } else if (allowUpgrades && smoothFps > thresholds.profileBalancedUp) {
+          nextProfile = 'cinematic';
+        }
+      } else if (allowUpgrades && smoothFps > thresholds.profilePerformanceUp) {
+        nextProfile = 'balanced';
+      }
+
+      if (currentQuality === 'high') {
+        if (smoothFps < thresholds.qualityHighDown) {
+          nextQuality = 'medium';
+        }
+      } else if (currentQuality === 'medium') {
+        if (smoothFps < thresholds.qualityMediumDown) {
+          nextQuality = 'low';
+        } else if (allowUpgrades && smoothFps > thresholds.qualityMediumUp) {
+          nextQuality = 'high';
+        }
+      } else if (allowUpgrades && smoothFps > thresholds.qualityLowUp) {
+        nextQuality = 'medium';
+      }
+    }
+    if (lockedProfile) {
+      nextProfile = lockedProfile;
+    }
+
+    const profileQuality: PostFxQuality =
+      nextProfile === 'cinematic'
+        ? 'high'
+        : nextProfile === 'balanced'
+          ? 'medium'
+          : 'low';
+    nextQuality = minQuality(nextQuality, profileQuality);
+
+    let nextDpr = nextProfile === 'cinematic' ? 1.4 : nextProfile === 'balanced' ? 1.1 : 0.92;
+    if (smoothFps < thresholds.dprLower) {
+      nextDpr = Math.min(nextDpr, 1);
+    } else if (
+      allowUpgrades &&
+      smoothFps > thresholds.dprUpper &&
+      nextProfile === 'cinematic'
+    ) {
+      nextDpr = 1.45;
+    }
+
+    if (!adaptive) {
+      nextLoadScale = 1;
+    } else {
+      let levelIndex = loadScaleLevelIndex(loadScaleRef.current);
+
+      while (
+        levelIndex > 0 &&
+        smoothFps < (thresholds.loadDrop[levelIndex - 1] ?? 0)
+      ) {
+        levelIndex -= 1;
+      }
+
+      if (allowUpgrades) {
+        while (
+          levelIndex < loadScaleLevels.length - 1 &&
+          smoothFps > (thresholds.loadRise[levelIndex] ?? Number.POSITIVE_INFINITY)
+        ) {
+          levelIndex += 1;
+        }
+      }
+
+      nextLoadScale = loadScaleLevels[levelIndex] ?? 1;
+    }
+
+    if (nextProfile === 'performance') {
+      nextLoadScale = Math.min(nextLoadScale, 0.68);
+    } else if (nextProfile === 'balanced') {
+      nextLoadScale = Math.min(nextLoadScale, 0.86);
+    }
+
+    const qualityChanged = nextQuality !== currentQuality;
+    const profileChanged = nextProfile !== currentProfile;
+    const dprChanged = Math.abs(nextDpr - currentDpr) > 0.03;
+    const loadScaleChanged = Math.abs(nextLoadScale - loadScaleRef.current) > 0.02;
+
+    if (qualityChanged) {
+      qualityRef.current = nextQuality;
+      onQualityChange(nextQuality);
+    }
+    if (profileChanged) {
+      profileRef.current = nextProfile;
+      onRuntimeProfileChange(nextProfile);
+    }
+    if (dprChanged) {
+      dprRef.current = nextDpr;
+      onDprChange(nextDpr);
+    }
+    if (loadScaleChanged) {
+      loadScaleRef.current = nextLoadScale;
+      onLoadScaleChange(nextLoadScale);
+    }
+
+    const effectiveProfile = profileChanged ? nextProfile : currentProfile;
+    const effectiveQuality = qualityChanged ? nextQuality : currentQuality;
+    const effectiveDpr = dprChanged ? nextDpr : currentDpr;
+    const effectiveLoadScale = loadScaleChanged ? nextLoadScale : loadScaleRef.current;
+
+    onTelemetry({
+      fps: smoothFps,
+      runtimeProfile: effectiveProfile,
+      postFxQuality: effectiveQuality,
+      adaptiveDpr: effectiveDpr,
+      adaptiveLoadScale: effectiveLoadScale,
+    });
+
+    if (
+      smoothFps < Math.max(30, desiredFps - 9) ||
+      qualityChanged ||
+      profileChanged ||
+      loadScaleChanged
+    ) {
+      cooldownRef.current = 2.2;
+    }
+  });
+
+  return null;
+}
+
 export const Scene3D = memo(function Scene3D({
   files,
   imports,
@@ -332,19 +760,131 @@ export const Scene3D = memo(function Scene3D({
   showAtmosphere,
   showWeather,
   showBuilders,
+  showPostProcessing,
+  adaptivePostFx,
+  modePresetIntensity,
+  visualPreset,
+  targetFps,
+  renderProfileLock,
+  showFps,
+  tourMode,
+  followDroneIndex,
+  livePointers,
   timeOfDay,
   weatherMode,
   totalCommitsByPath,
+  constructionWindowByPath,
   constructionMode,
   constructionProgress,
   onHover,
   onSelect,
   onCaptureReady,
+  onFpsUpdate,
+  onPerformanceTelemetry,
+  onFollowDroneChange,
+  onWalkBuildingChange,
+  onPointerSample,
 }: Scene3DProps) {
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const architectureMode = viewMode === 'architecture';
   const riskMode = viewMode === 'risk';
   const stackMode = viewMode === 'stack';
+  const overviewMode = viewMode === 'overview';
+  const [adaptiveQuality, setAdaptiveQuality] = useState<PostFxQuality>('high');
+  const [runtimeProfile, setRuntimeProfile] =
+    useState<RuntimeQualityProfile>('cinematic');
+  const [adaptiveDpr, setAdaptiveDpr] = useState(1.45);
+  const [adaptiveLoadScale, setAdaptiveLoadScale] = useState(1);
+  const [runtimeFps, setRuntimeFps] = useState(0);
+  const modePreset = useMemo(() => getSceneModePreset(viewMode), [viewMode]);
+  const cinematicIntensity = Math.max(0.55, Math.min(1.8, modePresetIntensity));
+  const cinematicPopulationScale = 1 + (cinematicIntensity - 1) * 0.6;
+  const visualPresetPopulationScale =
+    visualPreset === 'immersive'
+      ? 1.12
+      : visualPreset === 'performance'
+        ? 0.74
+        : 1;
+  const visualPresetQualityCap: PostFxQuality =
+    visualPreset === 'immersive'
+      ? 'high'
+      : visualPreset === 'performance'
+        ? 'low'
+        : 'medium';
+  const visualPresetDprCap =
+    visualPreset === 'immersive'
+      ? 1.45
+      : visualPreset === 'performance'
+        ? 1.02
+        : 1.2;
+  const visualPresetLoadCap =
+    visualPreset === 'immersive'
+      ? 1
+      : visualPreset === 'performance'
+        ? 0.82
+        : 0.94;
+  const tunedCameraFov = blendFromBase(48, modePreset.cameraFov, cinematicIntensity);
+  const tunedOrbitAutoRotateSpeed = blendFromBase(
+    0.42,
+    modePreset.orbitAutoRotateSpeed,
+    cinematicIntensity,
+  );
+  const tunedOrbitMinDistance = blendFromBase(
+    8,
+    modePreset.orbitMinDistance,
+    cinematicIntensity,
+  );
+  const tunedOrbitMaxDistance = blendFromBase(
+    190,
+    modePreset.orbitMaxDistance,
+    cinematicIntensity,
+  );
+  const tunedOrbitDamping = blendFromBase(
+    0.06,
+    modePreset.orbitDamping,
+    cinematicIntensity,
+  );
+  const tunedOrbitMaxPolarAngle = blendFromBase(
+    Math.PI / 2.03,
+    modePreset.orbitMaxPolarAngle,
+    cinematicIntensity,
+  );
+  const tunedOrbitFocusLerp = blendFromBase(
+    0.06,
+    modePreset.orbitFocusLerp,
+    cinematicIntensity,
+  );
+  const tunedOrbitCameraLerp = blendFromBase(
+    0.035,
+    modePreset.orbitCameraLerp,
+    cinematicIntensity,
+  );
+  const tunedAutoTourCadenceSec = blendFromBase(
+    6,
+    modePreset.autoTourCadenceSec,
+    cinematicIntensity,
+  );
+  const tunedSelectedCameraOffset = useMemo<[number, number, number]>(
+    () => [
+      blendFromBase(8, modePreset.selectedCameraOffset[0], cinematicIntensity),
+      blendFromBase(8, modePreset.selectedCameraOffset[1], cinematicIntensity),
+      blendFromBase(8, modePreset.selectedCameraOffset[2], cinematicIntensity),
+    ],
+    [cinematicIntensity, modePreset.selectedCameraOffset],
+  );
+  const tunedTourCameraOffset = useMemo<[number, number, number]>(
+    () => [
+      blendFromBase(10, modePreset.tourCameraOffset[0], cinematicIntensity),
+      blendFromBase(10, modePreset.tourCameraOffset[1], cinematicIntensity),
+      blendFromBase(10, modePreset.tourCameraOffset[2], cinematicIntensity),
+    ],
+    [cinematicIntensity, modePreset.tourCameraOffset],
+  );
+  const tunedEventIntensityBoost = blendFromBase(
+    1,
+    modePreset.eventIntensityBoost,
+    cinematicIntensity,
+  );
 
   const sceneFiles = useMemo(() => buildCityLayout(files, dna), [files, dna]);
   const compareSceneFiles = useMemo(
@@ -371,6 +911,15 @@ export const Scene3D = memo(function Scene3D({
     () => resolveWeatherMode(weatherMode, dna),
     [dna, weatherMode],
   );
+  const sceneAccentColor = useMemo(
+    () =>
+      blendHex(
+        palette.accent,
+        modePreset.accent,
+        Math.max(0.35, Math.min(0.9, 0.36 + cinematicIntensity * 0.26)),
+      ),
+    [cinematicIntensity, modePreset.accent, palette.accent],
+  );
   const atmospherePreset = useMemo<AtmospherePreset>(() => {
     const byTime: Record<
       ResolvedTimeOfDay,
@@ -384,51 +933,56 @@ export const Scene3D = memo(function Scene3D({
         pointSun: number;
         fogNear: number;
         fogFar: number;
+        exposure: number;
       }
     > = {
       dawn: {
         sky: '#d9e8ff',
         fog: '#c7d9f0',
-        ambient: 0.56,
-        hemisphere: 0.72,
-        directional: 0.8,
-        pointAccent: 0.76,
-        pointSun: 0.54,
+        ambient: 0.34,
+        hemisphere: 0.5,
+        directional: 0.48,
+        pointAccent: 0.5,
+        pointSun: 0.34,
         fogNear: 34,
         fogFar: 220,
+        exposure: 0.81,
       },
       day: {
         sky: palette.sky,
         fog: palette.fog,
-        ambient: 0.55,
-        hemisphere: 0.74,
-        directional: 0.95,
-        pointAccent: 0.75,
-        pointSun: 0.62,
+        ambient: 0.31,
+        hemisphere: 0.42,
+        directional: 0.54,
+        pointAccent: 0.4,
+        pointSun: 0.36,
         fogNear: 42,
         fogFar: 220,
+        exposure: 0.76,
       },
       sunset: {
         sky: '#ffd6bf',
         fog: '#efc2be',
-        ambient: 0.5,
-        hemisphere: 0.68,
-        directional: 0.74,
-        pointAccent: 0.9,
-        pointSun: 0.82,
+        ambient: 0.29,
+        hemisphere: 0.43,
+        directional: 0.45,
+        pointAccent: 0.58,
+        pointSun: 0.54,
         fogNear: 32,
         fogFar: 205,
+        exposure: 0.83,
       },
       night: {
         sky: '#0d1730',
         fog: '#1b2d4f',
-        ambient: 0.28,
-        hemisphere: 0.46,
-        directional: 0.42,
-        pointAccent: 1.15,
-        pointSun: 0.92,
+        ambient: 0.14,
+        hemisphere: 0.24,
+        directional: 0.22,
+        pointAccent: 0.88,
+        pointSun: 0.62,
         fogNear: 20,
         fogFar: 168,
+        exposure: 0.96,
       },
     };
 
@@ -441,15 +995,17 @@ export const Scene3D = memo(function Scene3D({
         ambientScale: number;
         directionalScale: number;
         pointBoost: number;
+        exposureScale: number;
         wetnessBoost: number;
       }
     > = {
       clear: {
         fogNearScale: 1,
         fogFarScale: 1,
-        ambientScale: 1,
-        directionalScale: 1,
-        pointBoost: 1,
+        ambientScale: 0.96,
+        directionalScale: 0.95,
+        pointBoost: 0.96,
+        exposureScale: 0.93,
         wetnessBoost: 0,
       },
       mist: {
@@ -458,6 +1014,7 @@ export const Scene3D = memo(function Scene3D({
         ambientScale: 0.96,
         directionalScale: 0.86,
         pointBoost: 1.08,
+        exposureScale: 0.94,
         wetnessBoost: 0.12,
       },
       rain: {
@@ -466,6 +1023,7 @@ export const Scene3D = memo(function Scene3D({
         ambientScale: 0.92,
         directionalScale: 0.74,
         pointBoost: 1.14,
+        exposureScale: 0.9,
         wetnessBoost: 0.22,
       },
       storm: {
@@ -474,6 +1032,7 @@ export const Scene3D = memo(function Scene3D({
         ambientScale: 0.86,
         directionalScale: 0.56,
         pointBoost: 1.28,
+        exposureScale: 0.86,
         wetnessBoost: 0.34,
       },
     };
@@ -482,16 +1041,53 @@ export const Scene3D = memo(function Scene3D({
     return {
       sky: base.sky,
       fog: base.fog,
-      ambient: base.ambient * weather.ambientScale,
-      hemisphere: base.hemisphere * weather.ambientScale,
-      directional: base.directional * weather.directionalScale,
-      pointAccent: base.pointAccent * weather.pointBoost,
-      pointSun: base.pointSun * weather.pointBoost,
-      fogNear: Math.max(12, base.fogNear * weather.fogNearScale),
-      fogFar: Math.max(85, base.fogFar * weather.fogFarScale),
+      ambient:
+        base.ambient *
+        weather.ambientScale *
+        blendFromBase(1, modePreset.lightingAmbientScale, cinematicIntensity),
+      hemisphere:
+        base.hemisphere *
+        weather.ambientScale *
+        blendFromBase(1, modePreset.lightingAmbientScale, cinematicIntensity),
+      directional:
+        base.directional *
+        weather.directionalScale *
+        blendFromBase(1, modePreset.lightingDirectionalScale, cinematicIntensity),
+      pointAccent:
+        base.pointAccent *
+        weather.pointBoost *
+        blendFromBase(1, modePreset.lightingPointScale, cinematicIntensity),
+      pointSun:
+        base.pointSun *
+        weather.pointBoost *
+        blendFromBase(1, modePreset.lightingPointScale, cinematicIntensity),
+      fogNear: Math.max(
+        12,
+        base.fogNear *
+          weather.fogNearScale *
+          blendFromBase(1, modePreset.lightingFogNearScale, cinematicIntensity),
+      ),
+      fogFar: Math.max(
+        85,
+        base.fogFar *
+          weather.fogFarScale *
+          blendFromBase(1, modePreset.lightingFogFarScale, cinematicIntensity),
+      ),
+      exposure: Math.max(0.68, Math.min(0.98, base.exposure * weather.exposureScale)),
       wetnessBoost: weather.wetnessBoost,
     };
-  }, [palette.fog, palette.sky, resolvedTimeOfDay, resolvedWeather]);
+  }, [
+    cinematicIntensity,
+    modePreset.lightingAmbientScale,
+    modePreset.lightingDirectionalScale,
+    modePreset.lightingFogFarScale,
+    modePreset.lightingFogNearScale,
+    modePreset.lightingPointScale,
+    palette.fog,
+    palette.sky,
+    resolvedTimeOfDay,
+    resolvedWeather,
+  ]);
 
   const districtInfo = useMemo<DistrictInfo[]>(() => {
     const map = new Map<
@@ -663,6 +1259,16 @@ export const Scene3D = memo(function Scene3D({
 
     return map;
   }, [sceneFiles]);
+  const buildingFootprints = useMemo<BuildingFootprint[]>(() => {
+    return sceneFiles.map((file) => ({
+      path: file.path,
+      x: file.x,
+      z: file.z,
+      width: file.width,
+      depth: file.depth,
+      topY: visualHeightMap.get(file.path) ?? 1.2,
+    }));
+  }, [sceneFiles, visualHeightMap]);
   const totalFloorCount = useMemo(
     () => sceneFiles.reduce((sum, file) => sum + file.commits.length, 0),
     [sceneFiles],
@@ -683,6 +1289,50 @@ export const Scene3D = memo(function Scene3D({
 
     return 68;
   }, [totalFloorCount]);
+  const heavySceneComplexity =
+    sceneFiles.length > 320 || totalFloorCount > 5200;
+  const runtimeQuality: PostFxQuality =
+    runtimeProfile === 'performance'
+      ? 'low'
+      : runtimeProfile === 'balanced'
+        ? 'medium'
+        : 'high';
+  const sceneQualityCap: PostFxQuality =
+    heavySceneComplexity && runtimeQuality === 'high' ? 'medium' : runtimeQuality;
+  const postFxBaseQuality: PostFxQuality =
+    showPostProcessing && adaptivePostFx ? adaptiveQuality : 'high';
+  const postFxCappedQuality: PostFxQuality = minQuality(
+    postFxBaseQuality,
+    visualPresetQualityCap,
+  );
+  const postFxQuality: PostFxQuality = showPostProcessing
+    ? minQuality(postFxCappedQuality, sceneQualityCap)
+    : minQuality(sceneQualityCap, visualPresetQualityCap);
+  const runtimeDensityScale =
+    runtimeProfile === 'cinematic'
+      ? 1
+      : runtimeProfile === 'balanced'
+        ? 0.72
+        : 0.46;
+  const runtimeAdaptiveScale = adaptivePostFx
+    ? Math.max(0.44, Math.min(1, adaptiveLoadScale))
+    : 1;
+  const runtimePresetScale = Math.min(runtimeAdaptiveScale, visualPresetLoadCap);
+  const runtimePopulationScale =
+    cinematicPopulationScale *
+    visualPresetPopulationScale *
+    runtimeDensityScale *
+    runtimePresetScale *
+    (heavySceneComplexity ? 0.72 : 1);
+  const adaptiveCanvasDpr = Math.max(
+    0.86,
+    Math.min(
+      visualPresetDprCap,
+      heavySceneComplexity
+        ? Math.min(adaptiveDpr, Math.min(1.1, visualPresetDprCap))
+        : adaptiveDpr,
+    ),
+  );
 
   const selectedPoint = useMemo<TourPoint | null>(() => {
     if (!selectedPath) {
@@ -698,9 +1348,9 @@ export const Scene3D = memo(function Scene3D({
       x: file.x,
       y: (visualHeightMap.get(file.path) ?? 2) * 0.4,
       z: file.z,
-      cameraOffset: [8, 8, 8],
+      cameraOffset: tunedSelectedCameraOffset,
     };
-  }, [sceneFiles, selectedPath, visualHeightMap]);
+  }, [sceneFiles, selectedPath, tunedSelectedCameraOffset, visualHeightMap]);
 
   const tourPoints = useMemo<TourPoint[]>(() => {
     return sceneFiles
@@ -710,9 +1360,9 @@ export const Scene3D = memo(function Scene3D({
         x: file.x,
         y: (visualHeightMap.get(file.path) ?? 2) * 0.38,
         z: file.z,
-        cameraOffset: [10, 10, 10],
+        cameraOffset: tunedTourCameraOffset,
       }));
-  }, [sceneFiles, hotspotPaths, visualHeightMap]);
+  }, [sceneFiles, hotspotPaths, tunedTourCameraOffset, visualHeightMap]);
 
   const importRoadSegments = useMemo<ImportRoadSegment[]>(() => {
     const edgeSignals = new Map<string, { violation: number; cycle: number }>();
@@ -737,10 +1387,27 @@ export const Scene3D = memo(function Scene3D({
     return buildRoadSegments(sceneFiles, imports, dna, cityBounds, edgeSignals);
   }, [cityBounds, dna, imports, insights?.graph.cycleEdges, insights?.graph.forbiddenEdges, sceneFiles]);
 
-  const trafficSegments = useMemo(
-    () => importRoadSegments.slice(0, 320),
-    [importRoadSegments],
-  );
+  const trafficSegments = useMemo(() => {
+    const baseBudget = architectureMode
+      ? 420
+      : riskMode
+        ? 210
+        : stackMode
+          ? 120
+          : 320;
+    const budget = Math.max(
+      40,
+      Math.round(baseBudget * modePreset.trafficDensity * runtimePopulationScale),
+    );
+    return importRoadSegments.slice(0, budget);
+  }, [
+    architectureMode,
+    importRoadSegments,
+    modePreset.trafficDensity,
+    riskMode,
+    runtimePopulationScale,
+    stackMode,
+  ]);
   const cityWetness = useMemo(() => {
     if (sceneFiles.length === 0) {
       return dna?.wetness ?? 0.35;
@@ -768,25 +1435,361 @@ export const Scene3D = memo(function Scene3D({
     );
   }, [atmospherePreset.wetnessBoost, buildingMoodMap, dna?.wetness, sceneFiles]);
   const citySeed = dna?.seed ?? 42;
+  const projectEvents = useMemo<ProjectCityEvent[]>(() => {
+    const hotspotFiles = sceneFiles
+      .filter((file) => hotspotPaths.has(file.path))
+      .slice(0, 20);
+    if (hotspotFiles.length === 0) {
+      return [];
+    }
+
+    const latestChanges = hotspotFiles.map((file) => file.commits[file.commits.length - 1]?.changes ?? 0);
+    const sortedChanges = [...latestChanges].sort((a, b) => a - b);
+    const medianChanges =
+      sortedChanges[Math.floor(sortedChanges.length / 2)] ?? 1;
+
+    const events: ProjectCityEvent[] = [];
+    hotspotFiles.forEach((file) => {
+      const latest = file.commits[file.commits.length - 1];
+      if (!latest) {
+        return;
+      }
+
+      const message = latest.message || '';
+      const risk = riskByPath.get(file.path);
+      const topY = visualHeightMap.get(file.path) ?? 2;
+      const baseImportance = importanceMap.get(file.path) ?? 0.2;
+
+      const flashSignal =
+        latest.changes >= Math.max(24, medianChanges * 1.35) ||
+        flashMessagePattern.test(message);
+      if (flashSignal) {
+        events.push({
+          id: `${file.path}-flash`,
+          type: 'flash',
+          path: file.path,
+          x: file.x,
+          y: topY + 0.48,
+          z: file.z,
+          intensity: clamp01(baseImportance * 0.65 + latest.changes / Math.max(80, medianChanges * 3)),
+          reason: `churn:${latest.changes}`,
+        });
+      }
+
+      const accidentSignal =
+        (risk?.risk ?? 0) > 0.5 ||
+        incidentMessagePattern.test(message);
+      if (accidentSignal) {
+        events.push({
+          id: `${file.path}-accident`,
+          type: 'accident',
+          path: file.path,
+          x: file.x,
+          y: topY + 0.4,
+          z: file.z,
+          intensity: clamp01((risk?.risk ?? 0) * 1.15 + (risk?.churn ?? 0) * 0.35),
+          reason: `risk:${Math.round((risk?.risk ?? 0) * 100)}`,
+        });
+      }
+
+      const recoverySignal =
+        ((risk?.bugfixRatio ?? 0) > 0.34 && recoveryMessagePattern.test(message)) ||
+        ((risk?.bugfixRatio ?? 0) > 0.52 && (risk?.recentCommits ?? 0) >= 2);
+      if (recoverySignal) {
+        events.push({
+          id: `${file.path}-recovery`,
+          type: 'recovery',
+          path: file.path,
+          x: file.x,
+          y: topY + 0.34,
+          z: file.z,
+          intensity: clamp01((risk?.bugfixRatio ?? 0) * 0.9 + (risk?.churn ?? 0) * 0.35),
+          reason: `bugfix:${Math.round((risk?.bugfixRatio ?? 0) * 100)}`,
+        });
+      }
+
+      const releaseSignal =
+        releaseMessagePattern.test(message) ||
+        (/(package\.json|pnpm-lock\.yaml|yarn\.lock|go\.mod|cargo\.toml|pom\.xml|dockerfile)$/i.test(file.path) &&
+          latest.changes > Math.max(8, medianChanges * 0.7));
+      if (releaseSignal) {
+        events.push({
+          id: `${file.path}-release`,
+          type: 'release',
+          path: file.path,
+          x: file.x,
+          y: topY + 0.56,
+          z: file.z,
+          intensity: clamp01(baseImportance * 0.6 + latest.changes / Math.max(90, medianChanges * 3.4)),
+          reason: 'release/deploy',
+        });
+      }
+    });
+
+    if (!events.some((event) => event.type === 'flash')) {
+      const fallback = hotspotFiles
+        .map((file) => ({
+          file,
+          score: file.commits[file.commits.length - 1]?.changes ?? 0,
+        }))
+        .sort((a, b) => b.score - a.score)[0];
+      if (fallback) {
+        events.push({
+          id: `${fallback.file.path}-flash-fallback`,
+          type: 'flash',
+          path: fallback.file.path,
+          x: fallback.file.x,
+          y: (visualHeightMap.get(fallback.file.path) ?? 2) + 0.45,
+          z: fallback.file.z,
+          intensity: 0.58,
+          reason: 'fallback-churn',
+        });
+      }
+    }
+
+    if (!events.some((event) => event.type === 'accident')) {
+      const fallback = hotspotFiles
+        .map((file) => ({
+          file,
+          score: riskByPath.get(file.path)?.risk ?? 0,
+        }))
+        .sort((a, b) => b.score - a.score)[0];
+      if (fallback) {
+        events.push({
+          id: `${fallback.file.path}-accident-fallback`,
+          type: 'accident',
+          path: fallback.file.path,
+          x: fallback.file.x,
+          y: (visualHeightMap.get(fallback.file.path) ?? 2) + 0.36,
+          z: fallback.file.z,
+          intensity: clamp01(0.45 + fallback.score * 0.5),
+          reason: 'fallback-risk',
+        });
+      }
+    }
+
+    if (!events.some((event) => event.type === 'recovery')) {
+      const fallback = hotspotFiles
+        .map((file) => ({
+          file,
+          score: riskByPath.get(file.path)?.bugfixRatio ?? 0,
+        }))
+        .sort((a, b) => b.score - a.score)[0];
+      if (fallback) {
+        events.push({
+          id: `${fallback.file.path}-recovery-fallback`,
+          type: 'recovery',
+          path: fallback.file.path,
+          x: fallback.file.x,
+          y: (visualHeightMap.get(fallback.file.path) ?? 2) + 0.33,
+          z: fallback.file.z,
+          intensity: clamp01(0.42 + fallback.score * 0.6),
+          reason: 'fallback-bugfix',
+        });
+      }
+    }
+
+    if (!events.some((event) => event.type === 'release')) {
+      const fallback = hotspotFiles
+        .map((file) => ({
+          file,
+          score: file.commits.length,
+        }))
+        .sort((a, b) => b.score - a.score)[0];
+      if (fallback) {
+        events.push({
+          id: `${fallback.file.path}-release-fallback`,
+          type: 'release',
+          path: fallback.file.path,
+          x: fallback.file.x,
+          y: (visualHeightMap.get(fallback.file.path) ?? 2) + 0.5,
+          z: fallback.file.z,
+          intensity: 0.5,
+          reason: 'fallback-activity',
+        });
+      }
+    }
+
+    return events
+      .map((event) => ({
+        ...event,
+        intensity: clamp01(event.intensity * tunedEventIntensityBoost),
+      }))
+      .sort((a, b) => b.intensity - a.intensity)
+      .slice(
+        0,
+        Math.max(
+          10,
+          Math.round(modePreset.eventBudget * runtimePopulationScale),
+        ),
+      );
+  }, [
+    hotspotPaths,
+    importanceMap,
+    modePreset.eventBudget,
+    riskByPath,
+    runtimePopulationScale,
+    sceneFiles,
+    tunedEventIntensityBoost,
+    visualHeightMap,
+  ]);
+  const modeFlags = useMemo(
+    () => ({
+      showStackTowers: stackMode,
+      showBranchOrbits: overviewMode || architectureMode,
+      showInsightSignals: overviewMode || architectureMode || riskMode,
+      showTraffic: architectureMode || (overviewMode && showAtmosphere),
+      showBuilders: showBuilders && !riskMode,
+      showAirTraffic: showAtmosphere && (overviewMode || architectureMode),
+      showAtmosphereLayer: showAtmosphere && !stackMode,
+      showDistrictGrid: architectureMode || stackMode,
+      showProjectEvents: overviewMode || architectureMode || riskMode,
+      forceWeather: riskMode,
+      roadWetness:
+        architectureMode
+          ? Math.max(0.22, cityWetness * 0.9)
+          : riskMode
+            ? Math.min(1, cityWetness * 1.2 + 0.08)
+            : stackMode
+              ? Math.max(0.1, cityWetness * 0.55)
+              : cityWetness,
+    }),
+    [
+      architectureMode,
+      cityWetness,
+      overviewMode,
+      riskMode,
+      showAtmosphere,
+      showBuilders,
+      stackMode,
+    ],
+  );
+  const builderPoints = useMemo(() => {
+    const budget = Math.max(
+      2,
+      Math.round(10 * modePreset.builderDensity * runtimePopulationScale),
+    );
+    return tourPoints.slice(0, budget);
+  }, [modePreset.builderDensity, runtimePopulationScale, tourPoints]);
+  const hotspotBillboards = useMemo(() => {
+    const strongestByPath = new Map<string, ProjectCityEvent>();
+    projectEvents.forEach((event) => {
+      const existing = strongestByPath.get(event.path);
+      if (!existing || existing.intensity < event.intensity) {
+        strongestByPath.set(event.path, event);
+      }
+    });
+
+    const budget = Math.max(
+      5,
+      Math.round(13 * modePreset.builderDensity * runtimePopulationScale),
+    );
+    return Array.from(strongestByPath.values())
+      .sort((a, b) => b.intensity - a.intensity)
+      .slice(0, budget)
+      .map((event) => ({
+        id: `billboard-${event.id}`,
+        x: event.x,
+        y: event.y + 0.9,
+        z: event.z,
+        label: event.path.split('/').slice(-2).join('/'),
+        intensity: event.intensity,
+        type: event.type,
+      }));
+  }, [modePreset.builderDensity, projectEvents, runtimePopulationScale]);
+  const buildingPerformanceTier: PostFxQuality =
+    postFxQuality === 'low' ||
+    sceneQualityCap === 'low' ||
+    runtimePresetScale < 0.64
+      ? 'low'
+      : postFxQuality === 'medium' ||
+          sceneQualityCap === 'medium' ||
+          sceneFiles.length > 220 ||
+          totalFloorCount > 3600
+        ? 'medium'
+        : 'high';
+  const shadowQuality: PostFxQuality =
+    postFxQuality === 'low' || runtimePresetScale < 0.6
+      ? 'low'
+      : heavySceneComplexity || runtimePresetScale < 0.82
+        ? 'medium'
+        : postFxQuality;
+  const shadowsEnabled = shadowQuality !== 'low';
+  const shadowMapSize =
+    shadowQuality === 'high'
+      ? runtimePresetScale < 0.9
+        ? 1280
+        : 1536
+      : runtimePresetScale < 0.72
+        ? 768
+        : 1024;
+  const enableWetReflections =
+    showPostProcessing &&
+    runtimePresetScale > 0.7 &&
+    (resolvedWeather === 'rain' ||
+      resolvedWeather === 'storm' ||
+      modeFlags.roadWetness > 0.46);
+
+  useEffect(() => {
+    if (!onPerformanceTelemetry) {
+      return;
+    }
+
+    onPerformanceTelemetry({
+      fps: runtimeFps,
+      runtimeProfile,
+      postFxQuality,
+      adaptiveDpr: adaptiveCanvasDpr,
+      adaptiveLoadScale: runtimePresetScale,
+    });
+  }, [
+    adaptiveCanvasDpr,
+    onPerformanceTelemetry,
+    postFxQuality,
+    runtimePresetScale,
+    runtimeFps,
+    runtimeProfile,
+  ]);
 
   return (
     <Canvas
       id="repo-city-canvas"
-      shadows
-      dpr={[1, 1.45]}
-      camera={{ position: [18, 24, 20], fov: 48 }}
+      shadows={shadowsEnabled}
+      dpr={adaptiveCanvasDpr}
+      camera={{ position: [18, 24, 20], fov: tunedCameraFov }}
       onPointerMissed={() => onSelect(null)}
     >
       <CaptureBridge onCaptureReady={onCaptureReady} />
+      <FpsProbe enabled={showFps} onFpsUpdate={onFpsUpdate} />
+      <AdaptivePerformanceProbe
+        enabled={sceneFiles.length > 0}
+        adaptive={adaptivePostFx}
+        targetFps={targetFps}
+        renderProfileLock={renderProfileLock}
+        onQualityChange={setAdaptiveQuality}
+        onRuntimeProfileChange={setRuntimeProfile}
+        onDprChange={setAdaptiveDpr}
+        onLoadScaleChange={setAdaptiveLoadScale}
+        onTelemetry={(telemetry) => {
+          setRuntimeFps((current) => {
+            if (Math.abs(current - telemetry.fps) < 0.35) {
+              return current;
+            }
+            return telemetry.fps;
+          });
+        }}
+      />
 
       <SceneLightingRig
         preset={atmospherePreset}
-        palette={{ sun: palette.sun, accent: palette.accent }}
+        palette={{ sun: palette.sun, accent: sceneAccentColor }}
         cityBounds={cityBounds}
+        shadowsEnabled={shadowsEnabled}
+        shadowMapSize={shadowMapSize}
       />
 
       <CyberpunkAtmosphere
-        enabled={showAtmosphere}
+        enabled={modeFlags.showAtmosphereLayer}
         cityBounds={cityBounds}
         palette={palette}
         seed={citySeed}
@@ -794,6 +1797,7 @@ export const Scene3D = memo(function Scene3D({
         starDensity={dna?.starDensity ?? 1900}
         timeOfDay={resolvedTimeOfDay}
         weather={resolvedWeather}
+        quality={postFxQuality}
       />
 
       <CityTerrain
@@ -801,9 +1805,40 @@ export const Scene3D = memo(function Scene3D({
         palette={palette}
         layout={dna?.layout ?? 'grid'}
         seed={citySeed}
-        wetness={cityWetness}
-        showGrid={architectureMode || stackMode}
+        wetness={modeFlags.roadWetness}
+        showGrid={modeFlags.showDistrictGrid}
+        files={sceneFiles}
+        roadSegments={importRoadSegments}
+        enableWetReflections={enableWetReflections}
+        reflectionQuality={postFxQuality}
+        quality={buildingPerformanceTier}
       />
+
+      <ModeSignatureLayer
+        mode={viewMode}
+        cityBounds={cityBounds}
+        accentColor={sceneAccentColor}
+        seed={citySeed}
+      />
+
+      {onPointerSample && (
+        <mesh
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[cityBounds.centerX, 0.06, cityBounds.centerZ]}
+          onPointerMove={(event) => {
+            event.stopPropagation();
+            onPointerSample({
+              x: event.point.x,
+              y: event.point.y,
+              z: event.point.z,
+              path: hoveredPath,
+            });
+          }}
+        >
+          <planeGeometry args={[cityBounds.size * 1.95, cityBounds.size * 1.95]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        </mesh>
+      )}
 
       <DistrictOverlays
         districts={districtInfo}
@@ -815,29 +1850,35 @@ export const Scene3D = memo(function Scene3D({
       <RoadNetwork
         segments={importRoadSegments}
         trafficSegments={trafficSegments}
-        accentColor={palette.accent}
-        trafficEnabled={showAtmosphere || architectureMode}
+        accentColor={sceneAccentColor}
+        trafficEnabled={modeFlags.showTraffic}
         textureSeed={citySeed}
-        wetness={cityWetness}
+        wetness={modeFlags.roadWetness}
       />
 
-      <InsightSignals
-        cityBounds={cityBounds}
-        insights={insights}
-        accentColor={palette.accent}
-      />
+      {modeFlags.showInsightSignals && (
+        <InsightSignals
+          cityBounds={cityBounds}
+          insights={insights}
+          accentColor={sceneAccentColor}
+        />
+      )}
 
-      <StackPassportTowers
-        stack={stack}
-        cityBounds={cityBounds}
-        accentColor={palette.accent}
-      />
+      {modeFlags.showStackTowers && (
+        <StackPassportTowers
+          stack={stack}
+          cityBounds={cityBounds}
+          accentColor={sceneAccentColor}
+        />
+      )}
 
-      <BranchOrbits
-        branches={branches}
-        cityBounds={cityBounds}
-        accentColor={palette.accent}
-      />
+      {modeFlags.showBranchOrbits && (
+        <BranchOrbits
+          branches={branches}
+          cityBounds={cityBounds}
+          accentColor={sceneAccentColor}
+        />
+      )}
 
       {compareEnabled && compareSceneFiles.length > 0 && (
         <ComparisonOverlay
@@ -845,7 +1886,7 @@ export const Scene3D = memo(function Scene3D({
           currentFiles={sceneFiles}
           cityBounds={cityBounds}
           mode={compareMode}
-          accentColor={palette.accent}
+          accentColor={sceneAccentColor}
         />
       )}
 
@@ -860,13 +1901,22 @@ export const Scene3D = memo(function Scene3D({
           }
           districtArchetype={districtMap.get(file.folder)?.archetype ?? 'commons'}
           accentColor={
-            districtMap.get(file.folder)?.archetypeAccent ?? palette.accent
+            blendHex(
+              districtMap.get(file.folder)?.archetypeAccent ?? palette.accent,
+              sceneAccentColor,
+              0.42,
+            )
           }
           architecture={dna?.architecture ?? 'cyberpunk'}
+          viewMode={viewMode}
           skylineBoost={dna?.skylineBoost ?? 1}
           importance={
             architectureMode
-              ? Math.min(1, (importanceMap.get(file.path) ?? 0.2) * 1.28)
+              ? Math.min(1, (importanceMap.get(file.path) ?? 0.2) * 1.12)
+              : riskMode
+                ? Math.min(1, (importanceMap.get(file.path) ?? 0.2) * 0.92)
+                : stackMode
+                  ? Math.min(1, (importanceMap.get(file.path) ?? 0.2) * 1.02)
               : (importanceMap.get(file.path) ?? 0.2)
           }
           buildingStyle={
@@ -886,10 +1936,12 @@ export const Scene3D = memo(function Scene3D({
               ? (riskByPath.get(file.path)?.risk ?? 0)
               : (riskByPath.get(file.path)?.risk ?? 0) * 0.55
           }
-          showHologram={showAtmosphere || architectureMode}
-          showWeather={showWeather && (riskMode || viewMode === 'overview')}
+          showHologram={overviewMode || architectureMode}
+          showWeather={modeFlags.forceWeather || showWeather}
           maxRenderedFloors={maxRenderedFloors}
           totalCommitCount={totalCommitsByPath.get(file.path) ?? file.commits.length}
+          performanceTier={buildingPerformanceTier}
+          constructionWindow={constructionWindowByPath.get(file.path)}
           constructionMode={constructionMode}
           constructionProgress={constructionProgress}
           onHover={onHover}
@@ -897,37 +1949,119 @@ export const Scene3D = memo(function Scene3D({
         />
       ))}
 
-      <BuilderDrones
-        points={tourPoints}
-        enabled={showBuilders}
-        speed={dna?.droneSpeed ?? 0.9}
-        color={palette.accent}
+      <HotspotBillboards
+        nodes={hotspotBillboards}
+        mode={viewMode}
+        accentColor={sceneAccentColor}
+        presetIntensity={cinematicIntensity}
       />
 
-      <AirTraffic
-        enabled={showAtmosphere}
+      <BuilderDrones
+        points={builderPoints}
+        enabled={modeFlags.showBuilders}
+        speed={(dna?.droneSpeed ?? 0.9) * modePreset.droneCruiseSpeed}
+        color={sceneAccentColor}
+        mode={viewMode}
         cityBounds={cityBounds}
-        color={palette.accent}
+        buildingFootprints={buildingFootprints}
+        selectedDroneIndex={followDroneIndex}
+        onSelectDrone={onFollowDroneChange}
+      />
+
+      <LivePointers pointers={livePointers} mode={viewMode} />
+
+      {modeFlags.showProjectEvents && (
+        <>
+          <ProjectEventSignals
+            events={projectEvents}
+            mode={viewMode}
+            intensityBoost={tunedEventIntensityBoost}
+          />
+          <ProjectEventRoutes
+            events={projectEvents}
+            mode={viewMode}
+            accentColor={sceneAccentColor}
+          />
+          <CityActivities
+            events={projectEvents}
+            mode={viewMode}
+            accentColor={sceneAccentColor}
+            presetIntensity={cinematicIntensity}
+          />
+          <GroundEventAgents
+            events={projectEvents}
+            cityBounds={cityBounds}
+            buildingFootprints={buildingFootprints}
+            mode={viewMode}
+            color={sceneAccentColor}
+            seed={citySeed}
+            serviceMultiplier={modePreset.serviceMultiplier}
+            pedestrianMultiplier={modePreset.pedestrianMultiplier}
+            density={modePreset.agentDensity * runtimePopulationScale}
+            maxAgents={Math.round(modePreset.agentBudget * runtimePopulationScale)}
+          />
+        </>
+      )}
+
+      <AirTraffic
+        enabled={modeFlags.showAirTraffic}
+        cityBounds={cityBounds}
+        buildingFootprints={buildingFootprints}
+        color={sceneAccentColor}
         seed={citySeed}
+        density={modePreset.airTrafficDensity * runtimePopulationScale}
       />
 
       <OrbitControls
         ref={controlsRef}
+        enabled={tourMode === 'orbit'}
         enableDamping
-        dampingFactor={0.06}
-        autoRotate={autoTour && !selectedPath}
-        autoRotateSpeed={0.42}
-        minDistance={8}
-        maxDistance={190}
-        maxPolarAngle={Math.PI / 2.03}
+        dampingFactor={tunedOrbitDamping}
+        autoRotate={false}
+        autoRotateSpeed={tunedOrbitAutoRotateSpeed}
+        enablePan={tourMode === 'orbit'}
+        enableRotate={tourMode === 'orbit'}
+        enableZoom={tourMode === 'orbit'}
+        minDistance={tunedOrbitMinDistance}
+        maxDistance={tunedOrbitMaxDistance}
+        maxPolarAngle={tunedOrbitMaxPolarAngle}
       />
 
       <CameraDirector
         controlsRef={controlsRef}
         selectedPoint={selectedPoint}
         tourPoints={tourPoints}
+        roadSegments={importRoadSegments}
+        buildingFootprints={buildingFootprints}
+        mode={viewMode}
+        tourMode={tourMode}
+        followDroneIndex={followDroneIndex}
+        droneSpeed={dna?.droneSpeed ?? 0.9}
         autoTour={autoTour}
+        baseFov={tunedCameraFov}
+        orbitFocusLerp={tunedOrbitFocusLerp}
+        orbitCameraLerp={tunedOrbitCameraLerp}
+        autoTourCadenceSec={tunedAutoTourCadenceSec}
+        onWalkBuildingChange={onWalkBuildingChange}
       />
+
+      {showPostProcessing && (
+        <Suspense fallback={null}>
+          <PostProcessingLayerLazy
+            enabled={showPostProcessing}
+            quality={postFxQuality}
+            preset={modePreset}
+            presetIntensity={cinematicIntensity}
+            mode={viewMode}
+            weather={resolvedWeather}
+            timeOfDay={resolvedTimeOfDay}
+            tourMode={tourMode}
+            selectedPath={selectedPath}
+            accentColor={sceneAccentColor}
+            cityBounds={cityBounds}
+          />
+        </Suspense>
+      )}
     </Canvas>
   );
 });

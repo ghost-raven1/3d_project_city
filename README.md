@@ -40,10 +40,14 @@ MVP web app that visualizes the commit history of a public GitHub repository as 
 - Parse diagnostics in payload: stage timing and GitHub request counts
 - REST fallback endpoint for manual parse calls
 - Mobile-friendly UI layout for form and info card
+- Collaboration rooms with persistent chat history (PostgreSQL), replies, and attachments
+- Optional room access key for private collaboration channels
+- Real-time 3D live pointers for participants in the same room
+- Local LLM narrator that reacts to scene actions and tells repository story beats in real-time
 
 ## Stack
 
-- Backend: NestJS, Sequelize, SQLite, Socket.io, Octokit
+- Backend: NestJS, Sequelize, PostgreSQL, Socket.io, Octokit
 - Frontend: React + Vite + TypeScript, MUI, Zustand, react-three-fiber, drei
 
 ## Project structure
@@ -88,6 +92,7 @@ Frontend starts at `http://localhost:5173`.
 - `Live watch (2m)`: re-parse periodically for near-real-time monitoring
 - `Atmosphere`: toggles sky/cloud ambience
 - `Cyberpunk FX overlay`: toggles animated post-processing canvas layer over the scene
+- `Post FX`: toggles real-time scene postprocessing (`Bloom`, `Depth of Field`, `Chromatic Aberration`, `Noise`, `Vignette`, `Scanline`)
 - `Code weather`: toggles activity overlays for buildings
 - `Builders`: toggles animated drones above hotspots
 - `Summary`: copies a short executive summary for sharing/reporting
@@ -98,7 +103,12 @@ Frontend starts at `http://localhost:5173`.
 Backend (`backend/.env`, optional):
 
 - `PORT=3000`
-- `SQLITE_PATH=./data/repositories.sqlite`
+- `DATABASE_URL=postgresql://postgres:postgres@localhost:5432/repo_city`
+- `DB_SYNCHRONIZE=true` (set `false` in production)
+- `DB_ALLOW_SYNC_IN_PRODUCTION=false` (safety valve; keep `false` unless controlled maintenance)
+- `DB_LOGGING=false`
+- `DB_SSL=false`
+- `DB_SSL_REJECT_UNAUTHORIZED=false` (set `true` for production TLS DB endpoints)
 - `MAX_COMMITS=0` (`0` or negative = full history, positive = explicit cap)
 - `GITHUB_CONCURRENCY=5`
 - `HISTORY_FETCH_MAX_PAGES=90`
@@ -121,6 +131,20 @@ Backend (`backend/.env`, optional):
 - `CACHE_TTL_MS=3600000`
 - `GITHUB_TOKEN=` (optional, recommended to avoid rate limit)
 - `CORS_ORIGIN=*`
+- `WS_CORS_ORIGIN=*` (optional, overrides websocket CORS origin list, comma-separated)
+- `NARRATOR_ENABLED=true`
+- `NARRATOR_BASE_URL=http://localhost:11434`
+- `NARRATOR_MODEL=qwen2.5:3b-instruct`
+- `NARRATOR_REQUIRE_LLM=true` (disables canned fallback text; narrator responds only from LLM)
+- `NARRATOR_TIMEOUT_MS=35000`
+- `NARRATOR_NUM_PREDICT=120`
+- `NARRATOR_MIN_NUM_PREDICT=56` (adaptive lower bound for retry attempts)
+- `NARRATOR_ENDPOINT_PREFERENCE=chat-first` (`chat-first` or `generate-first`)
+- `NARRATOR_MIN_INTERVAL_MS=1400`
+- `NARRATOR_MAX_PROMPT_CHARS=320`
+- `PARSE_MIN_INTERVAL_MS=3500`
+- `MAX_ACTIVE_PARSE_RUNS=3`
+- `ROOM_MESSAGE_MIN_INTERVAL_MS=180`
 
 Note: without `GITHUB_TOKEN`, GitHub unauthenticated quota is low and parsing may fail with quota errors.
 When running via Docker Compose, set `GITHUB_TOKEN` in root `.env` (Compose loads it automatically).
@@ -128,6 +152,22 @@ When running via Docker Compose, set `GITHUB_TOKEN` in root `.env` (Compose load
 Frontend (`frontend/.env`, optional):
 
 - `VITE_API_URL=http://localhost:3000`
+
+Production (`.env.prod`, required for `docker-compose.prod.yml`):
+
+- `DOMAIN=city.example.com`
+- `VITE_API_URL=https://city.example.com`
+- `CORS_ORIGIN=https://city.example.com`
+- `WS_CORS_ORIGIN=https://city.example.com`
+- `POSTGRES_DB=repo_city`
+- `POSTGRES_USER=postgres`
+- `POSTGRES_PASSWORD=change-me`
+- `DB_SYNCHRONIZE=false`
+- `DB_ALLOW_SYNC_IN_PRODUCTION=false`
+- `LETSENCRYPT_EMAIL=ops@example.com`
+- `CERTBOT_DOMAINS=city.example.com,www.city.example.com` (optional, comma-separated SAN list)
+- `GITHUB_TOKEN=` (optional)
+- `OLLAMA_MODEL=qwen2.5:3b-instruct` (optional)
 
 ## API and events
 
@@ -139,17 +179,37 @@ Frontend (`frontend/.env`, optional):
 - Server event: `partial_result` with partial repository payload while commits are still loading
 - Server event: `result` with final repository JSON
 - Server event: `error` with `{ message }`
+- Client event: `room_join` with `{ roomId, nickname, accessKey? }`
+- Client event: `room_leave`
+- Client event: `room_message` with `{ roomId, clientMessageId?, text, replyToId?, attachments? }`
+- Client event: `room_pointer` with `{ roomId, x, y, z, path? }`
+- Server event: `room_state` with room participants/messages/pointers snapshot
+- Server event: `room_participants` with updated participant list
+- Server event: `room_message` with a new persisted chat message
+- Server event: `room_pointer` and `room_pointer_remove` for live 3D cursors
+- Server event: `room_error` with room validation/auth errors
+- Client event: `narrator_action` with action context (`mode`, `timeline`, selected file, stats, sourceMessageId?)
+- Server event: `narrator_ack` with request status (`accepted` / `throttled` / `busy` / `invalid` / `disabled`)
+- Server event: `narrator_story` with generated narration text and optional `uiActions`
+- Server event: `narrator_status` with narrator state (`idle` / `thinking` / `error`)
 
 ### REST fallback
 
 - `POST /repo/parse`
 - Body: `{ "repoUrl": "https://github.com/facebook/react" }`
+- `GET /health/live`
+- `GET /health/ready`
+
+Production safety guards:
+
+- Wildcard `CORS_ORIGIN` / `WS_CORS_ORIGIN` is rejected in production.
+- `DB_SYNCHRONIZE=true` is rejected in production unless `DB_ALLOW_SYNC_IN_PRODUCTION=true`.
 
 ## Caching behavior
 
 - Cache table `repo_cache` keeps:
   - `url`
-  - `data` (JSON string)
+  - `data` (`jsonb`)
   - `lastFetched`
   - `etag`
 - If cache is fresh (< 1 hour): result returned immediately.
@@ -161,7 +221,14 @@ Frontend (`frontend/.env`, optional):
 npm run lint --workspace backend
 npm run lint --workspace frontend
 npm run test --workspace frontend
+npm run test:e2e:ws
 npm run build
+```
+
+For websocket e2e smoke test, provide Postgres DSN (example):
+
+```bash
+TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/repo_city npm run test:e2e:ws
 ```
 
 ## Docker
@@ -172,6 +239,32 @@ docker compose up --build
 
 - Frontend: `http://localhost:8080`
 - Backend: `http://localhost:3000`
+- Local LLM (Ollama): `http://localhost:11434`
+
+### Production HTTPS (Nginx + Certbot)
+
+1. Prepare production env:
+
+```bash
+cp .env.prod.example .env.prod
+```
+
+2. Make sure DNS for `DOMAIN` points to your server and ports `80/443` are open.
+3. Start production stack:
+
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+```
+
+4. Bootstrap/issue certificates:
+
+```bash
+chmod +x scripts/prod-certbot-init.sh
+./scripts/prod-certbot-init.sh
+```
+
+After bootstrap, `certbot` runs in background and renews certificates automatically.
+`edge` (nginx) applies hardened headers in production templates (`HSTS`, `CSP`, `X-Frame-Options`, `X-Content-Type-Options`, `Permissions-Policy`, `COOP/CORP`, and related hardening headers).
 
 ## Notes
 

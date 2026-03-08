@@ -18,10 +18,10 @@ export class RepoCacheModel extends Model<RepoCacheModel> {
   declare url: string;
 
   @Column({
-    type: DataType.TEXT,
+    type: DataType.JSONB,
     allowNull: false,
   })
-  declare data: string;
+  declare data: unknown;
 
   @Column({
     type: DataType.DATE,

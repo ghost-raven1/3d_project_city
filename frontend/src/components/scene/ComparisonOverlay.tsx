@@ -3,6 +3,10 @@ import { Text } from '@react-three/drei';
 import { PositionedFileHistory } from '../../types/repository';
 import { compactFloors, floorHeight } from '../../utils/building';
 import { CityBounds } from './types';
+import {
+  SCENE_HUD_PANEL_LIGHT_ALT,
+  SCENE_HUD_TEXT_SECONDARY,
+} from './scene-hud-colors';
 
 interface ComparisonOverlayProps {
   baselineFiles: PositionedFileHistory[];
@@ -84,8 +88,8 @@ export const ComparisonOverlay = memo(function ComparisonOverlay({
           >
             <planeGeometry args={[cityBounds.size * 0.48, cityBounds.size * 0.92]} />
             <meshStandardMaterial
-              color="#d9ecff"
-              emissive="#bfdfff"
+              color={SCENE_HUD_PANEL_LIGHT_ALT}
+              emissive={SCENE_HUD_PANEL_LIGHT_ALT}
               emissiveIntensity={0.08}
               transparent
               opacity={0.14}
@@ -107,7 +111,7 @@ export const ComparisonOverlay = memo(function ComparisonOverlay({
           <Text
             position={[cityBounds.centerX - cityBounds.size * 0.24, 0.35, cityBounds.centerZ - cityBounds.size * 0.44]}
             fontSize={0.6}
-            color="#6a92be"
+            color={SCENE_HUD_TEXT_SECONDARY}
             anchorX="left"
             anchorY="middle"
           >

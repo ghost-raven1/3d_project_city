@@ -1,6 +1,10 @@
 import { memo, useMemo } from 'react';
 import { Float, Text } from '@react-three/drei';
 import { DistrictInfo } from './types';
+import {
+  SCENE_HUD_OUTLINE_DARK,
+  SCENE_HUD_TEXT_PRIMARY,
+} from './scene-hud-colors';
 
 interface DistrictOverlaysProps {
   districts: DistrictInfo[];
@@ -173,11 +177,11 @@ export const DistrictOverlays = memo(function DistrictOverlays({
             >
               <Text
                 fontSize={Math.max(0.72, Math.min(1.16, district.width * 0.055))}
-                color="#d9ecff"
+                color={SCENE_HUD_TEXT_PRIMARY}
                 anchorX={anchorX}
                 anchorY="middle"
                 outlineWidth={0.035}
-                outlineColor="#0b1626"
+                outlineColor={SCENE_HUD_OUTLINE_DARK}
                 maxWidth={Math.max(8, district.width)}
               >
                 {district.label}
@@ -189,7 +193,7 @@ export const DistrictOverlays = memo(function DistrictOverlays({
                 anchorX={anchorX}
                 anchorY="middle"
                 outlineWidth={0.012}
-                outlineColor="#07111f"
+                outlineColor={SCENE_HUD_OUTLINE_DARK}
                 maxWidth={Math.max(8, district.width)}
               >
                 {district.archetypeLabel}

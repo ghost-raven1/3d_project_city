@@ -48,7 +48,15 @@ export class RepoCacheService {
 
   private mapEntry(entry: RepoCacheModel): CacheLookupResult {
     const ageMs = Date.now() - new Date(entry.lastFetched).getTime();
-    const parsed = JSON.parse(entry.data) as RepositoryResult;
+    const parsed = this.parsePayload(entry.data);
+    if (!parsed) {
+      const fallback = this.createEmptyRepositoryResult(entry.url);
+      return {
+        payload: fallback,
+        etag: entry.etag,
+        isFresh: false,
+      };
+    }
     const hasStackPayload = Boolean((parsed as Partial<RepositoryResult>).stack);
     const hasBranchPayload = Array.isArray(
       (parsed as Partial<RepositoryResult>).branches,
@@ -109,11 +117,35 @@ export class RepoCacheService {
     await this.cacheModel.upsert(
       {
         url,
-        data: JSON.stringify(payload),
+        data: payload,
         lastFetched: now,
         etag,
       } as unknown as RepoCacheModel,
     );
+  }
+
+  private parsePayload(raw: unknown): RepositoryResult | null {
+    if (!raw) {
+      return null;
+    }
+
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (parsed && typeof parsed === 'object') {
+          return parsed as RepositoryResult;
+        }
+      } catch {
+        return null;
+      }
+      return null;
+    }
+
+    if (typeof raw === 'object') {
+      return raw as RepositoryResult;
+    }
+
+    return null;
   }
 
   private createEmptyStackPassport(): StackPassport {
@@ -163,6 +195,25 @@ export class RepoCacheService {
         stageMs: {},
         generatedAt: new Date(0).toISOString(),
       },
+    };
+  }
+
+  private createEmptyRepositoryResult(url: string): RepositoryResult {
+    const fallbackRepository =
+      this.rebuildRepositoryMeta(url) ?? {
+        owner: 'unknown',
+        repo: 'unknown',
+        url,
+      };
+    return {
+      repository: fallbackRepository,
+      totalCommits: 0,
+      files: [],
+      imports: [],
+      generatedAt: new Date(0).toISOString(),
+      branches: [],
+      stack: this.createEmptyStackPassport(),
+      analysis: this.createEmptyAnalysis(),
     };
   }
 

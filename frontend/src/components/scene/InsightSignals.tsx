@@ -3,6 +3,16 @@ import { Text } from '@react-three/drei';
 import { CityBounds } from './types';
 import { RepositoryInsights } from '../../utils/insights';
 import { stringToColor } from '../../utils/color';
+import {
+  SCENE_HUD_GLOW_WHITE,
+  SCENE_HUD_OUTLINE_DARK,
+  SCENE_HUD_OUTLINE_SOFT,
+  SCENE_HUD_PANEL_LIGHT,
+  SCENE_HUD_PANEL_LIGHT_ALT,
+  SCENE_HUD_PANEL_TEXT_DARK,
+  SCENE_HUD_TEXT_PRIMARY,
+  SCENE_HUD_TEXT_SECONDARY,
+} from './scene-hud-colors';
 
 interface InsightSignalsProps {
   cityBounds: CityBounds;
@@ -190,7 +200,11 @@ export const InsightSignals = memo(function InsightSignals({
           rotation={[0, marker.angle, 0]}
         >
           <boxGeometry args={[0.22, 0.16 + (index % 3) * 0.03, 0.07]} />
-          <meshStandardMaterial color="#9ab5d8" emissive={accentColor} emissiveIntensity={0.24} />
+          <meshStandardMaterial
+            color={SCENE_HUD_PANEL_LIGHT_ALT}
+            emissive={accentColor}
+            emissiveIntensity={0.24}
+          />
         </mesh>
       ))}
 
@@ -199,22 +213,22 @@ export const InsightSignals = memo(function InsightSignals({
           <Text
             position={[historyLabels.fromX, 0.34, historyLabels.z]}
             fontSize={0.11}
-            color="#375675"
+            color={SCENE_HUD_TEXT_SECONDARY}
             anchorX="right"
             anchorY="middle"
             outlineWidth={0.012}
-            outlineColor="#ffffff"
+            outlineColor={SCENE_HUD_OUTLINE_DARK}
           >
             {historyLabels.fromDate}
           </Text>
           <Text
             position={[historyLabels.toX, 0.34, historyLabels.z]}
             fontSize={0.11}
-            color="#375675"
+            color={SCENE_HUD_TEXT_SECONDARY}
             anchorX="left"
             anchorY="middle"
             outlineWidth={0.012}
-            outlineColor="#ffffff"
+            outlineColor={SCENE_HUD_OUTLINE_DARK}
           >
             {historyLabels.toDate}
           </Text>
@@ -242,11 +256,11 @@ export const InsightSignals = memo(function InsightSignals({
           <Text
             position={[0, signal.height + 0.44, 0]}
             fontSize={0.17}
-            color="#294868"
+            color={SCENE_HUD_TEXT_PRIMARY}
             anchorX="center"
             anchorY="middle"
             outlineWidth={0.015}
-            outlineColor="#ffffff"
+            outlineColor={SCENE_HUD_OUTLINE_DARK}
             maxWidth={4.5}
           >
             {signal.label}
@@ -262,12 +276,16 @@ export const InsightSignals = memo(function InsightSignals({
         >
           <mesh position={[0, 0.66, 0]}>
             <boxGeometry args={[0.2, 1.32, 0.2]} />
-            <meshStandardMaterial color="#e2edf9" emissive={accentColor} emissiveIntensity={0.16} />
+            <meshStandardMaterial
+              color={SCENE_HUD_PANEL_LIGHT}
+              emissive={accentColor}
+              emissiveIntensity={0.16}
+            />
           </mesh>
           <mesh position={[0, 1.36, 0]}>
             <boxGeometry args={[1.18, 0.22, 0.08]} />
             <meshStandardMaterial
-              color="#f3f9ff"
+              color={SCENE_HUD_GLOW_WHITE}
               emissive={accentColor}
               emissiveIntensity={0.1}
               transparent
@@ -277,11 +295,11 @@ export const InsightSignals = memo(function InsightSignals({
           <Text
             position={[0, 1.37, 0.05]}
             fontSize={0.12}
-            color="#355575"
+            color={SCENE_HUD_PANEL_TEXT_DARK}
             anchorX="center"
             anchorY="middle"
             outlineWidth={0.012}
-            outlineColor="#ffffff"
+            outlineColor={SCENE_HUD_OUTLINE_DARK}
             maxWidth={1.05}
           >
             {framework.label}
@@ -298,11 +316,11 @@ export const InsightSignals = memo(function InsightSignals({
           <Text
             position={[0, 0, 0.11]}
             fontSize={0.08}
-            color="#ffffff"
+            color={SCENE_HUD_TEXT_PRIMARY}
             anchorX="center"
             anchorY="middle"
             outlineWidth={0.01}
-            outlineColor="#1f334c"
+            outlineColor={SCENE_HUD_OUTLINE_SOFT}
           >
             {author.label}
           </Text>
@@ -313,31 +331,39 @@ export const InsightSignals = memo(function InsightSignals({
         <group position={[statSignals.baseX, 0, statSignals.baseZ]}>
           <mesh position={[0, statSignals.filesHeight / 2, 0]}>
             <boxGeometry args={[0.36, statSignals.filesHeight, 0.36]} />
-            <meshStandardMaterial color="#b8d0ef" emissive={accentColor} emissiveIntensity={0.18} />
+            <meshStandardMaterial
+              color={SCENE_HUD_PANEL_LIGHT_ALT}
+              emissive={accentColor}
+              emissiveIntensity={0.18}
+            />
           </mesh>
           <mesh position={[0.54, statSignals.commitsHeight / 2, 0]}>
             <boxGeometry args={[0.36, statSignals.commitsHeight, 0.36]} />
-            <meshStandardMaterial color="#9fc3ef" emissive={accentColor} emissiveIntensity={0.25} />
+            <meshStandardMaterial
+              color={SCENE_HUD_PANEL_LIGHT}
+              emissive={accentColor}
+              emissiveIntensity={0.25}
+            />
           </mesh>
           <Text
             position={[0, statSignals.filesHeight + 0.2, 0]}
             fontSize={0.11}
-            color="#2f4f70"
+            color={SCENE_HUD_TEXT_SECONDARY}
             anchorX="center"
             anchorY="middle"
             outlineWidth={0.012}
-            outlineColor="#ffffff"
+            outlineColor={SCENE_HUD_OUTLINE_DARK}
           >
             {`F ${insights.totalFiles}`}
           </Text>
           <Text
             position={[0.54, statSignals.commitsHeight + 0.2, 0]}
             fontSize={0.11}
-            color="#2f4f70"
+            color={SCENE_HUD_TEXT_SECONDARY}
             anchorX="center"
             anchorY="middle"
             outlineWidth={0.012}
-            outlineColor="#ffffff"
+            outlineColor={SCENE_HUD_OUTLINE_DARK}
           >
             {`C ${insights.totalCommits}`}
           </Text>

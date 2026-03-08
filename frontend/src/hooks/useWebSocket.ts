@@ -1,28 +1,13 @@
 import { useCallback, useEffect, useMemo } from 'react';
-import { io, Socket } from 'socket.io-client';
 import { useRepoStore } from '../store/useRepoStore';
 import {
   ProgressPayload,
   RepositoryPartialResult,
   RepositoryResult,
 } from '../types/repository';
-
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
+import { getParserSocket } from './socket';
 const GITHUB_REPO_REGEX =
   /^https?:\/\/github\.com\/[^/\s]+\/[^/\s?#]+(?:\.git)?\/?$/i;
-
-let socketInstance: Socket | null = null;
-
-function getSocket(): Socket {
-  if (!socketInstance) {
-    socketInstance = io(`${API_BASE_URL}/parser`, {
-      autoConnect: false,
-      transports: ['websocket'],
-    });
-  }
-
-  return socketInstance;
-}
 
 export function useWebSocket() {
   const setStatus = useRepoStore((state) => state.setStatus);
@@ -32,7 +17,7 @@ export function useWebSocket() {
   const setRepoUrl = useRepoStore((state) => state.setRepoUrl);
   const setSelectedPath = useRepoStore((state) => state.setSelectedPath);
 
-  const socket = useMemo(() => getSocket(), []);
+  const socket = useMemo(() => getParserSocket(), []);
 
   useEffect(() => {
     setStatus('connecting');

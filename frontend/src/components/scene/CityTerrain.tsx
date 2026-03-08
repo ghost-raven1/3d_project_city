@@ -1,10 +1,12 @@
 import { memo, useEffect, useMemo, useRef } from 'react';
-import { Grid } from '@react-three/drei';
+import { Grid, MeshReflectorMaterial } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
-import { MeshStandardMaterial, PlaneGeometry } from 'three';
+import { Color, InstancedMesh, MeshStandardMaterial, Object3D, PlaneGeometry } from 'three';
 import { CityLayout, CityPalette } from '../../utils/city-dna';
+import { PositionedFileHistory } from '../../types/repository';
 import { createTerrainTexture } from '../../utils/procedural-textures';
-import { CityBounds } from './types';
+import { CityBounds, ImportRoadSegment, PostFxQuality } from './types';
+import { SCENE_HUD_GLOW_WHITE } from './scene-hud-colors';
 
 interface CityTerrainProps {
   cityBounds: CityBounds;
@@ -13,12 +15,25 @@ interface CityTerrainProps {
   seed: number;
   wetness: number;
   showGrid: boolean;
+  files: PositionedFileHistory[];
+  roadSegments: ImportRoadSegment[];
+  enableWetReflections: boolean;
+  reflectionQuality: PostFxQuality;
+  quality: PostFxQuality;
 }
 
 interface Pylon {
   x: number;
   z: number;
   height: number;
+}
+
+interface TreeSpot {
+  x: number;
+  z: number;
+  height: number;
+  crown: number;
+  hueJitter: number;
 }
 
 function terrainNoise(x: number, z: number, seed: number): number {
@@ -28,6 +43,37 @@ function terrainNoise(x: number, z: number, seed: number): number {
   return base + secondary + ripple;
 }
 
+function seededRandomFactory(seed: number): () => number {
+  let state = seed | 0;
+  return () => {
+    state = (state * 1664525 + 1013904223) | 0;
+    return (state >>> 0) / 4294967296;
+  };
+}
+
+function distancePointToSegment(
+  px: number,
+  pz: number,
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+): number {
+  const vx = bx - ax;
+  const vz = bz - az;
+  const wx = px - ax;
+  const wz = pz - az;
+  const lengthSq = vx * vx + vz * vz;
+  if (lengthSq < 0.0001) {
+    return Math.hypot(px - ax, pz - az);
+  }
+
+  const projection = Math.max(0, Math.min(1, (wx * vx + wz * vz) / lengthSq));
+  const closestX = ax + vx * projection;
+  const closestZ = az + vz * projection;
+  return Math.hypot(px - closestX, pz - closestZ);
+}
+
 export const CityTerrain = memo(function CityTerrain({
   cityBounds,
   palette,
@@ -35,8 +81,22 @@ export const CityTerrain = memo(function CityTerrain({
   seed,
   wetness,
   showGrid,
+  files,
+  roadSegments,
+  enableWetReflections,
+  reflectionQuality,
+  quality,
 }: CityTerrainProps) {
   const pulseMaterialsRef = useRef<Array<MeshStandardMaterial | null>>([]);
+  const treeTrunkMeshRef = useRef<InstancedMesh | null>(null);
+  const treeLowerCrownMeshRef = useRef<InstancedMesh | null>(null);
+  const treeUpperCrownMeshRef = useRef<InstancedMesh | null>(null);
+  const treeDummy = useMemo(() => new Object3D(), []);
+  const treeColor = useMemo(() => new Color(), []);
+  const qualityScale = useMemo(
+    () => (quality === 'high' ? 1 : quality === 'medium' ? 0.72 : 0.46),
+    [quality],
+  );
   const terrainGeometry = useMemo(() => {
     const width = cityBounds.size * 1.85;
     const depth = cityBounds.size * 1.85;
@@ -72,7 +132,11 @@ export const CityTerrain = memo(function CityTerrain({
   }, [terrainTexture]);
 
   const pylons = useMemo<Pylon[]>(() => {
-    const count = 14 + (seed % 7);
+    const baseCount = 14 + (seed % 7);
+    const count = Math.max(
+      quality === 'low' ? 6 : 9,
+      Math.round(baseCount * qualityScale),
+    );
     const radius = cityBounds.size * 0.52;
 
     return Array.from({ length: count }, (_, index) => {
@@ -85,7 +149,7 @@ export const CityTerrain = memo(function CityTerrain({
         height: 2.4 + ((seed + index * 11) % 12) * 0.25,
       };
     });
-  }, [cityBounds.centerX, cityBounds.centerZ, cityBounds.size, seed]);
+  }, [cityBounds.centerX, cityBounds.centerZ, cityBounds.size, quality, qualityScale, seed]);
 
   const radialSpokes = useMemo(() => {
     if (layout !== 'radial') {
@@ -107,6 +171,144 @@ export const CityTerrain = memo(function CityTerrain({
       };
     });
   }, [cityBounds.centerX, cityBounds.centerZ, cityBounds.size, layout, seed]);
+
+  const roadLines = useMemo(() => {
+    return roadSegments.flatMap((segment) => {
+      const lines: Array<{ x1: number; z1: number; x2: number; z2: number; width: number }> =
+        [];
+      for (let index = 0; index < segment.points.length - 1; index += 1) {
+        const from = segment.points[index];
+        const to = segment.points[index + 1];
+        if (!from || !to) {
+          continue;
+        }
+
+        lines.push({
+          x1: from.x,
+          z1: from.z,
+          x2: to.x,
+          z2: to.z,
+          width: segment.width,
+        });
+      }
+      return lines;
+    });
+  }, [roadSegments]);
+
+  const trees = useMemo<TreeSpot[]>(() => {
+    const random = seededRandomFactory(seed * 17 + files.length * 31);
+    const targetCount = Math.min(
+      Math.round(240 * qualityScale),
+      Math.max(
+        quality === 'low' ? 26 : quality === 'medium' ? 52 : 90,
+        Math.round((cityBounds.size * 0.85 + files.length * 0.1) * qualityScale),
+      ),
+    );
+    const result: TreeSpot[] = [];
+    const maxAttempts = targetCount * 24;
+
+    for (let attempt = 0; attempt < maxAttempts && result.length < targetCount; attempt += 1) {
+      const angle = random() * Math.PI * 2;
+      const radius = cityBounds.size * (0.16 + random() * 0.78);
+      const x =
+        cityBounds.centerX + Math.cos(angle) * radius + (random() - 0.5) * 4.2;
+      const z =
+        cityBounds.centerZ + Math.sin(angle) * radius + (random() - 0.5) * 4.2;
+
+      if (
+        Math.hypot(x - cityBounds.centerX, z - cityBounds.centerZ) <
+        cityBounds.size * 0.16
+      ) {
+        continue;
+      }
+
+      const nearBuilding = files.some(
+        (file) =>
+          Math.abs(x - file.x) <= file.width * 0.68 + 1 &&
+          Math.abs(z - file.z) <= file.depth * 0.68 + 1,
+      );
+      if (nearBuilding) {
+        continue;
+      }
+
+      const nearRoad = roadLines.some((line) => {
+        const clearance = Math.max(0.45, line.width * 2.4);
+        return (
+          distancePointToSegment(x, z, line.x1, line.z1, line.x2, line.z2) < clearance
+        );
+      });
+      if (nearRoad) {
+        continue;
+      }
+
+      result.push({
+        x,
+        z,
+        height: 0.85 + random() * 1.8,
+        crown: 0.34 + random() * 0.62,
+        hueJitter: -8 + random() * 22,
+      });
+    }
+
+    return result;
+  }, [
+    cityBounds.centerX,
+    cityBounds.centerZ,
+    cityBounds.size,
+    files,
+    quality,
+    qualityScale,
+    roadLines,
+    seed,
+  ]);
+  const treeCastsShadow = quality !== 'low';
+
+  useEffect(() => {
+    const trunkMesh = treeTrunkMeshRef.current;
+    const lowerCrownMesh = treeLowerCrownMeshRef.current;
+    const upperCrownMesh = treeUpperCrownMeshRef.current;
+    if (!trunkMesh || !lowerCrownMesh || !upperCrownMesh) {
+      return;
+    }
+
+    trees.forEach((tree, index) => {
+      treeDummy.position.set(tree.x, tree.height * 0.5, tree.z);
+      treeDummy.scale.set(1, tree.height, 1);
+      treeDummy.rotation.set(0, 0, 0);
+      treeDummy.updateMatrix();
+      trunkMesh.setMatrixAt(index, treeDummy.matrix);
+
+      const hue = ((((116 + tree.hueJitter) % 360) + 360) % 360) / 360;
+      treeColor.setHSL(hue, 0.36, 0.36);
+
+      treeDummy.position.set(tree.x, tree.height * 0.56, tree.z);
+      treeDummy.scale.set(tree.crown * 0.95, tree.crown * 1.25, tree.crown * 0.95);
+      treeDummy.rotation.set(0, 0, 0);
+      treeDummy.updateMatrix();
+      lowerCrownMesh.setMatrixAt(index, treeDummy.matrix);
+      lowerCrownMesh.setColorAt(index, treeColor);
+
+      treeDummy.position.set(tree.x, tree.height * 0.9, tree.z);
+      treeDummy.scale.set(tree.crown * 0.74, tree.crown, tree.crown * 0.74);
+      treeDummy.rotation.set(0, 0, 0);
+      treeDummy.updateMatrix();
+      upperCrownMesh.setMatrixAt(index, treeDummy.matrix);
+      upperCrownMesh.setColorAt(index, treeColor);
+    });
+
+    trunkMesh.count = trees.length;
+    lowerCrownMesh.count = trees.length;
+    upperCrownMesh.count = trees.length;
+    trunkMesh.instanceMatrix.needsUpdate = true;
+    lowerCrownMesh.instanceMatrix.needsUpdate = true;
+    upperCrownMesh.instanceMatrix.needsUpdate = true;
+    if (lowerCrownMesh.instanceColor) {
+      lowerCrownMesh.instanceColor.needsUpdate = true;
+    }
+    if (upperCrownMesh.instanceColor) {
+      upperCrownMesh.instanceColor.needsUpdate = true;
+    }
+  }, [treeColor, treeDummy, trees]);
 
   useFrame(({ clock }) => {
     const t = clock.elapsedTime;
@@ -138,21 +340,57 @@ export const CityTerrain = memo(function CityTerrain({
         />
       </mesh>
 
-      <mesh
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[cityBounds.centerX, 0.07, cityBounds.centerZ]}
-      >
-        <planeGeometry args={[cityBounds.size * 1.5, cityBounds.size * 1.5]} />
-        <meshStandardMaterial
-          color="#f7fbff"
-          emissive="#f7fbff"
-          emissiveIntensity={0.05 + wetness * 0.04}
-          roughness={0.92}
-          metalness={0.04}
-          transparent
-          opacity={0.025 + wetness * 0.025}
-        />
-      </mesh>
+      {enableWetReflections ? (
+        <mesh
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[cityBounds.centerX, 0.065, cityBounds.centerZ]}
+        >
+          <planeGeometry args={[cityBounds.size * 1.5, cityBounds.size * 1.5]} />
+          <MeshReflectorMaterial
+            color="#e8f2ff"
+            resolution={
+              reflectionQuality === 'high'
+                ? 1024
+                : reflectionQuality === 'medium'
+                  ? 768
+                  : 512
+            }
+            blur={
+              reflectionQuality === 'high'
+                ? [420, 160]
+                : reflectionQuality === 'medium'
+                  ? [260, 110]
+                  : [160, 80]
+            }
+            mixBlur={reflectionQuality === 'low' ? 0.48 : 0.62}
+            mixStrength={0.2 + wetness * 0.45}
+            mirror={0.14 + wetness * 0.28}
+            roughness={0.32 + (1 - wetness) * 0.22}
+            metalness={0.08 + wetness * 0.14}
+            depthScale={0.32}
+            minDepthThreshold={0.68}
+            maxDepthThreshold={1.35}
+            transparent
+            opacity={0.18 + wetness * 0.16}
+          />
+        </mesh>
+      ) : (
+        <mesh
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[cityBounds.centerX, 0.07, cityBounds.centerZ]}
+        >
+          <planeGeometry args={[cityBounds.size * 1.5, cityBounds.size * 1.5]} />
+          <meshStandardMaterial
+            color={SCENE_HUD_GLOW_WHITE}
+            emissive={SCENE_HUD_GLOW_WHITE}
+            emissiveIntensity={0.05 + wetness * 0.04}
+            roughness={0.92}
+            metalness={0.04}
+            transparent
+            opacity={0.025 + wetness * 0.025}
+          />
+        </mesh>
+      )}
 
       {showGrid &&
         [0.24, 0.39, 0.58].map((radiusRatio, index) => (
@@ -245,6 +483,31 @@ export const CityTerrain = memo(function CityTerrain({
           </mesh>
         </group>
       ))}
+
+      {trees.length > 0 && (
+        <>
+          <instancedMesh ref={treeTrunkMeshRef} args={[undefined, undefined, trees.length]} castShadow={treeCastsShadow}>
+            <cylinderGeometry args={[0.06, 0.08, 1, 7]} />
+            <meshStandardMaterial color="#69513e" roughness={0.86} metalness={0.02} />
+          </instancedMesh>
+          <instancedMesh
+            ref={treeLowerCrownMeshRef}
+            args={[undefined, undefined, trees.length]}
+            castShadow={treeCastsShadow}
+          >
+            <coneGeometry args={[1, 1, 8]} />
+            <meshStandardMaterial roughness={0.9} metalness={0.02} vertexColors />
+          </instancedMesh>
+          <instancedMesh
+            ref={treeUpperCrownMeshRef}
+            args={[undefined, undefined, trees.length]}
+            castShadow={treeCastsShadow}
+          >
+            <coneGeometry args={[1, 1, 8]} />
+            <meshStandardMaterial roughness={0.9} metalness={0.02} vertexColors />
+          </instancedMesh>
+        </>
+      )}
     </>
   );
 });
