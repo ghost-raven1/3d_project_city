@@ -36,6 +36,25 @@ interface TreeSpot {
   hueJitter: number;
 }
 
+interface LakeSpot {
+  x: number;
+  z: number;
+  radiusX: number;
+  radiusZ: number;
+  levelY: number;
+  tintShift: number;
+}
+
+interface RockSpot {
+  x: number;
+  z: number;
+  size: number;
+  height: number;
+  rotX: number;
+  rotY: number;
+  tone: number;
+}
+
 function terrainNoise(x: number, z: number, seed: number): number {
   const base = Math.sin((x + seed * 0.009) * 0.06) * 0.44;
   const secondary = Math.cos((z - seed * 0.007) * 0.08) * 0.36;
@@ -72,6 +91,16 @@ function distancePointToSegment(
   const closestX = ax + vx * projection;
   const closestZ = az + vz * projection;
   return Math.hypot(px - closestX, pz - closestZ);
+}
+
+function distancePointToFootprint(
+  px: number,
+  pz: number,
+  footprint: PositionedFileHistory,
+): number {
+  const dx = Math.max(Math.abs(px - footprint.x) - footprint.width * 0.5, 0);
+  const dz = Math.max(Math.abs(pz - footprint.z) - footprint.depth * 0.5, 0);
+  return Math.hypot(dx, dz);
 }
 
 export const CityTerrain = memo(function CityTerrain({
@@ -195,6 +224,179 @@ export const CityTerrain = memo(function CityTerrain({
     });
   }, [roadSegments]);
 
+  const lakes = useMemo<LakeSpot[]>(() => {
+    const random = seededRandomFactory(seed * 23 + files.length * 41);
+    const targetCount = Math.max(
+      quality === 'low' ? 1 : quality === 'medium' ? 2 : 3,
+      Math.min(5, Math.round(2 + qualityScale * 2.4)),
+    );
+    const result: LakeSpot[] = [];
+    const maxAttempts = targetCount * 34;
+    const halfSize = cityBounds.size * 0.5;
+
+    for (let attempt = 0; attempt < maxAttempts && result.length < targetCount; attempt += 1) {
+      const x = cityBounds.centerX + (random() - 0.5) * cityBounds.size * 1.25;
+      const z = cityBounds.centerZ + (random() - 0.5) * cityBounds.size * 1.25;
+      const radiusX = 2.4 + random() * 3.7;
+      const radiusZ = 2 + random() * 3.2;
+      const maxRadius = Math.max(radiusX, radiusZ);
+
+      if (
+        x < cityBounds.centerX - halfSize + maxRadius + 1 ||
+        x > cityBounds.centerX + halfSize - maxRadius - 1 ||
+        z < cityBounds.centerZ - halfSize + maxRadius + 1 ||
+        z > cityBounds.centerZ + halfSize - maxRadius - 1
+      ) {
+        continue;
+      }
+
+      if (Math.hypot(x - cityBounds.centerX, z - cityBounds.centerZ) < cityBounds.size * 0.14) {
+        continue;
+      }
+
+      const nearBuilding = files.some(
+        (file) => distancePointToFootprint(x, z, file) < maxRadius + 2.2,
+      );
+      if (nearBuilding) {
+        continue;
+      }
+
+      const nearRoad = roadLines.some((line) => {
+        const clearance = maxRadius + Math.max(0.9, line.width * 3.5);
+        return distancePointToSegment(x, z, line.x1, line.z1, line.x2, line.z2) < clearance;
+      });
+      if (nearRoad) {
+        continue;
+      }
+
+      const nearPylon = pylons.some(
+        (pylon) =>
+          Math.hypot(x - pylon.x, z - pylon.z) < maxRadius + 0.9,
+      );
+      if (nearPylon) {
+        continue;
+      }
+
+      const intersectsLake = result.some((lake) => {
+        const dist = Math.hypot(x - lake.x, z - lake.z);
+        const existing = Math.max(lake.radiusX, lake.radiusZ);
+        return dist < maxRadius + existing + 2.4;
+      });
+      if (intersectsLake) {
+        continue;
+      }
+
+      result.push({
+        x,
+        z,
+        radiusX,
+        radiusZ,
+        levelY: -0.045 - random() * 0.02,
+        tintShift: random(),
+      });
+    }
+
+    return result;
+  }, [
+    cityBounds.centerX,
+    cityBounds.centerZ,
+    cityBounds.size,
+    files,
+    pylons,
+    quality,
+    qualityScale,
+    roadLines,
+    seed,
+  ]);
+
+  const rocks = useMemo<RockSpot[]>(() => {
+    const random = seededRandomFactory(seed * 29 + files.length * 53);
+    const targetCount = Math.max(
+      quality === 'low' ? 18 : quality === 'medium' ? 34 : 56,
+      Math.round((cityBounds.size * 0.54 + files.length * 0.08) * qualityScale),
+    );
+    const result: RockSpot[] = [];
+    const maxAttempts = targetCount * 26;
+    const halfSize = cityBounds.size * 0.5;
+
+    for (let attempt = 0; attempt < maxAttempts && result.length < targetCount; attempt += 1) {
+      const x = cityBounds.centerX + (random() - 0.5) * cityBounds.size * 1.34;
+      const z = cityBounds.centerZ + (random() - 0.5) * cityBounds.size * 1.34;
+      const size = 0.22 + random() * 0.92;
+      const footprint = size * 0.72;
+
+      if (
+        x < cityBounds.centerX - halfSize + footprint + 0.8 ||
+        x > cityBounds.centerX + halfSize - footprint - 0.8 ||
+        z < cityBounds.centerZ - halfSize + footprint + 0.8 ||
+        z > cityBounds.centerZ + halfSize - footprint - 0.8
+      ) {
+        continue;
+      }
+
+      const nearBuilding = files.some(
+        (file) => distancePointToFootprint(x, z, file) < footprint + 0.86,
+      );
+      if (nearBuilding) {
+        continue;
+      }
+
+      const nearRoad = roadLines.some((line) => {
+        const clearance = footprint + Math.max(0.42, line.width * 1.7);
+        return distancePointToSegment(x, z, line.x1, line.z1, line.x2, line.z2) < clearance;
+      });
+      if (nearRoad) {
+        continue;
+      }
+
+      const nearLake = lakes.some((lake) => {
+        const lakeRadius = Math.max(lake.radiusX, lake.radiusZ);
+        return Math.hypot(x - lake.x, z - lake.z) < lakeRadius + footprint + 1;
+      });
+      if (nearLake) {
+        continue;
+      }
+
+      const nearPylon = pylons.some(
+        (pylon) => Math.hypot(x - pylon.x, z - pylon.z) < footprint + 0.66,
+      );
+      if (nearPylon) {
+        continue;
+      }
+
+      const intersectsRock = result.some((rock) => {
+        const dist = Math.hypot(x - rock.x, z - rock.z);
+        return dist < footprint + rock.size * 0.72 + 0.24;
+      });
+      if (intersectsRock) {
+        continue;
+      }
+
+      result.push({
+        x,
+        z,
+        size,
+        height: 0.38 + random() * 0.92,
+        rotX: (random() - 0.5) * 0.4,
+        rotY: random() * Math.PI * 2,
+        tone: random(),
+      });
+    }
+
+    return result;
+  }, [
+    cityBounds.centerX,
+    cityBounds.centerZ,
+    cityBounds.size,
+    files,
+    lakes,
+    pylons,
+    quality,
+    qualityScale,
+    roadLines,
+    seed,
+  ]);
+
   const trees = useMemo<TreeSpot[]>(() => {
     const random = seededRandomFactory(seed * 17 + files.length * 31);
     const targetCount = Math.min(
@@ -241,6 +443,21 @@ export const CityTerrain = memo(function CityTerrain({
         continue;
       }
 
+      const nearLake = lakes.some((lake) => {
+        const lakeRadius = Math.max(lake.radiusX, lake.radiusZ);
+        return Math.hypot(x - lake.x, z - lake.z) < lakeRadius + 0.85;
+      });
+      if (nearLake) {
+        continue;
+      }
+
+      const nearRock = rocks.some(
+        (rock) => Math.hypot(x - rock.x, z - rock.z) < rock.size * 0.72 + 0.36,
+      );
+      if (nearRock) {
+        continue;
+      }
+
       result.push({
         x,
         z,
@@ -258,6 +475,8 @@ export const CityTerrain = memo(function CityTerrain({
     files,
     quality,
     qualityScale,
+    lakes,
+    rocks,
     roadLines,
     seed,
   ]);
@@ -391,6 +610,78 @@ export const CityTerrain = memo(function CityTerrain({
           />
         </mesh>
       )}
+
+      {lakes.map((lake, index) => {
+        const waterColor = new Color('#4ca9d9')
+          .lerp(new Color(palette.accent), 0.25 + lake.tintShift * 0.18)
+          .getStyle();
+        return (
+          <group key={`lake-${index}`} position={[lake.x, 0, lake.z]}>
+            <mesh position={[0, lake.levelY - 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+              <circleGeometry args={[1, 42]} />
+              <meshStandardMaterial
+                color="#2f4f6d"
+                roughness={0.92}
+                metalness={0.04}
+                transparent
+                opacity={0.45}
+              />
+            </mesh>
+            <mesh
+              position={[0, lake.levelY, 0]}
+              rotation={[-Math.PI / 2, 0, 0]}
+              scale={[lake.radiusX, lake.radiusZ, 1]}
+            >
+              <circleGeometry args={[1, 56]} />
+              <meshStandardMaterial
+                color={waterColor}
+                emissive={waterColor}
+                emissiveIntensity={0.18 + wetness * 0.22}
+                roughness={0.22}
+                metalness={0.36}
+                transparent
+                opacity={0.58 + wetness * 0.12}
+              />
+            </mesh>
+            <mesh
+              position={[0, lake.levelY + 0.003, 0]}
+              rotation={[-Math.PI / 2, 0, 0]}
+              scale={[lake.radiusX * 1.05, lake.radiusZ * 1.05, 1]}
+            >
+              <ringGeometry args={[1, 1.12, 48]} />
+              <meshStandardMaterial
+                color="#8fd6ff"
+                emissive={palette.accent}
+                emissiveIntensity={0.3}
+                transparent
+                opacity={0.3}
+              />
+            </mesh>
+          </group>
+        );
+      })}
+
+      {rocks.map((rock, index) => (
+        <mesh
+          key={`rock-${index}`}
+          position={[rock.x, rock.height * 0.52, rock.z]}
+          rotation={[rock.rotX, rock.rotY, 0]}
+          scale={[rock.size * 0.88, rock.height, rock.size]}
+          castShadow={quality !== 'low'}
+          receiveShadow
+        >
+          <dodecahedronGeometry args={[0.58, 0]} />
+          <meshStandardMaterial
+            color={
+              new Color('#768193')
+                .lerp(new Color('#a3b0bf'), rock.tone * 0.42)
+                .getStyle()
+            }
+            roughness={0.92}
+            metalness={0.05}
+          />
+        </mesh>
+      ))}
 
       {showGrid &&
         [0.24, 0.39, 0.58].map((radiusRatio, index) => (

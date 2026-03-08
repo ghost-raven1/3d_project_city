@@ -41,7 +41,11 @@ import {
 import { RepositoryResult } from '../types/repository';
 import { TimelineBounds } from '../utils/city';
 import { CityDNA } from '../utils/city-dna';
-import { ScenePerformanceTelemetry } from './scene/types';
+import {
+  CoasterDriveProfile,
+  ScenePerformanceTelemetry,
+  TourMode,
+} from './scene/types';
 import {
   panelActionButtonSx,
   panelChipSx,
@@ -89,7 +93,7 @@ interface TopControlPanelProps {
   branchOptions: string[];
   jumpOptions: string[];
   autoTour: boolean;
-  tourMode: 'orbit' | 'drone' | 'walk';
+  tourMode: TourMode;
   followDroneIndex: number;
   liveWatch: boolean;
   showAtmosphere: boolean;
@@ -104,6 +108,8 @@ interface TopControlPanelProps {
   showPostProcessing: boolean;
   adaptivePostFx: boolean;
   modePresetIntensity: number;
+  coasterIntensity: number;
+  coasterProfile: CoasterDriveProfile;
   visualPreset: 'immersive' | 'balanced' | 'performance';
   targetFps: 30 | 45 | 60;
   renderProfileLock: 'auto' | 'cinematic' | 'balanced' | 'performance';
@@ -123,7 +129,7 @@ interface TopControlPanelProps {
   onStartParsing: () => void;
   onTimelineChange: (value: number) => void;
   onAutoTourChange: (value: boolean) => void;
-  onTourModeChange: (value: 'orbit' | 'drone' | 'walk') => void;
+  onTourModeChange: (value: TourMode) => void;
   onFollowDroneIndexChange: (value: number) => void;
   onLiveWatchChange: (value: boolean) => void;
   onShowAtmosphereChange: (value: boolean) => void;
@@ -138,6 +144,8 @@ interface TopControlPanelProps {
   onShowPostProcessingChange: (value: boolean) => void;
   onAdaptivePostFxChange: (value: boolean) => void;
   onModePresetIntensityChange: (value: number) => void;
+  onCoasterIntensityChange: (value: number) => void;
+  onCoasterProfileChange: (value: CoasterDriveProfile) => void;
   onVisualPresetChange: (value: 'immersive' | 'balanced' | 'performance') => void;
   onTargetFpsChange: (value: 30 | 45 | 60) => void;
   onRenderProfileLockChange: (
@@ -215,6 +223,8 @@ export function TopControlPanel({
   showPostProcessing,
   adaptivePostFx,
   modePresetIntensity,
+  coasterIntensity,
+  coasterProfile,
   visualPreset,
   targetFps,
   renderProfileLock,
@@ -249,6 +259,8 @@ export function TopControlPanel({
   onShowPostProcessingChange,
   onAdaptivePostFxChange,
   onModePresetIntensityChange,
+  onCoasterIntensityChange,
+  onCoasterProfileChange,
   onVisualPresetChange,
   onTargetFpsChange,
   onRenderProfileLockChange,
@@ -351,6 +363,12 @@ export function TopControlPanel({
   const fxLabel = veryDenseHeader
     ? `FX ${scenePerformance.postFxQuality.toUpperCase()} · ${Math.round(scenePerformance.adaptiveLoadScale * 100)}%`
     : `FX ${scenePerformance.postFxQuality.toUpperCase()} · DPR ${scenePerformance.adaptiveDpr.toFixed(2)} · Load ${Math.round(scenePerformance.adaptiveLoadScale * 100)}%`;
+  const coasterProfileHint =
+    coasterProfile === 'comfort'
+      ? 'Comfort: softer slope response, lower peak speed, gentler turns.'
+      : coasterProfile === 'extreme'
+        ? 'Extreme: stronger slope acceleration, higher peak speed, sharper dynamics.'
+        : 'Sport: balanced dynamics with clear slope feel and moderate safety margins.';
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -482,6 +500,26 @@ export function TopControlPanel({
                     }
                     variant="outlined"
                     sx={panelChipSx}
+                  />
+                  <Chip
+                    size="small"
+                    color={liveWatch ? 'success' : 'default'}
+                    label={liveWatch ? 'Sync // Live' : 'Sync // Snapshot'}
+                    variant="outlined"
+                    sx={{
+                      ...panelChipSx,
+                      display: { xs: 'none', lg: 'inline-flex' },
+                    }}
+                  />
+                  <Chip
+                    size="small"
+                    color={autoTour ? 'info' : 'default'}
+                    label={autoTour ? 'Tour // Auto' : 'Tour // Manual'}
+                    variant="outlined"
+                    sx={{
+                      ...panelChipSx,
+                      display: { xs: 'none', xl: 'inline-flex' },
+                    }}
                   />
                   <Chip
                     size="small"
@@ -770,6 +808,12 @@ export function TopControlPanel({
                 <Chip
                   size="small"
                   label={`Load: ${Math.round(scenePerformance.adaptiveLoadScale * 100)}%`}
+                  variant="outlined"
+                  sx={panelChipSx}
+                />
+                <Chip
+                  size="small"
+                  label={`FOV B${Math.round(scenePerformance.fovBuildingCoverage * 100)} R${Math.round(scenePerformance.fovRoadCoverage * 100)} D${Math.round(scenePerformance.fovDistrictCoverage * 100)}`}
                   variant="outlined"
                   sx={panelChipSx}
                 />
@@ -1192,13 +1236,14 @@ export function TopControlPanel({
                 label="Tour mode"
                 value={tourMode}
                 onChange={(event) =>
-                  onTourModeChange(event.target.value as 'orbit' | 'drone' | 'walk')
+                  onTourModeChange(event.target.value as TourMode)
                 }
                 sx={{ minWidth: 150 }}
               >
                 <MenuItem value="orbit">Orbit</MenuItem>
                 <MenuItem value="drone">Follow drone</MenuItem>
                 <MenuItem value="walk">Walk surface</MenuItem>
+                <MenuItem value="coaster">Train ride</MenuItem>
               </TextField>
 
               {(tourMode === 'drone' || tourMode === 'walk') && (
@@ -1221,6 +1266,43 @@ export function TopControlPanel({
                 <Typography variant="caption" color="text.secondary">
                   Walk controls: click scene + mouse look, WASD move, Shift sprint, E enter building, Q/Esc exit.
                 </Typography>
+              )}
+              {tourMode === 'coaster' && (
+                <Stack spacing={0.3}>
+                  <Typography variant="caption" color="text.secondary">
+                    Train ride: camera is inside the lead car, speed adapts to slope, turns and safety braking.
+                  </Typography>
+                  <TextField
+                    select
+                    size="small"
+                    label="Drive profile"
+                    value={coasterProfile}
+                    onChange={(event) =>
+                      onCoasterProfileChange(event.target.value as CoasterDriveProfile)
+                    }
+                    sx={{ minWidth: 150 }}
+                  >
+                    <MenuItem value="comfort">Comfort</MenuItem>
+                    <MenuItem value="sport">Sport</MenuItem>
+                    <MenuItem value="extreme">Extreme</MenuItem>
+                  </TextField>
+                  <Typography variant="caption" color="text.secondary">
+                    {coasterProfileHint}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Coaster intensity: {Math.round(coasterIntensity * 100)}%
+                  </Typography>
+                  <Slider
+                    size="small"
+                    min={0.65}
+                    max={1.8}
+                    step={0.05}
+                    value={coasterIntensity}
+                    onChange={(_, value) =>
+                      onCoasterIntensityChange(value as number)
+                    }
+                  />
+                </Stack>
               )}
 
               <FormControlLabel

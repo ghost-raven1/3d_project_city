@@ -135,8 +135,9 @@ Backend (`backend/.env`, optional):
 - `NARRATOR_ENABLED=true`
 - `NARRATOR_BASE_URL=http://localhost:11434`
 - `NARRATOR_MODEL=qwen2.5:3b-instruct`
-- `NARRATOR_REQUIRE_LLM=true` (disables canned fallback text; narrator responds only from LLM)
+- `NARRATOR_REQUIRE_LLM=false` (set `true` to disable canned fallback and require LLM responses only)
 - `NARRATOR_TIMEOUT_MS=35000`
+- `NARRATOR_FALLBACK_TIMEOUT_MS=5500` (when fallback is allowed, wait this long for LLM before local narrator text)
 - `NARRATOR_NUM_PREDICT=120`
 - `NARRATOR_MIN_NUM_PREDICT=56` (adaptive lower bound for retry attempts)
 - `NARRATOR_ENDPOINT_PREFERENCE=chat-first` (`chat-first` or `generate-first`)

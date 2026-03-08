@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { CoasterDriveProfile, TourMode } from '../components/scene/types';
 
 interface UseScenePreferencesParams {
   generatedAt?: string;
@@ -10,7 +11,6 @@ const SCENE_PREFERENCES_STORAGE_KEY = 'repo-city:scene-preferences:v1';
 
 type TimeOfDayMode = 'auto' | 'dawn' | 'day' | 'sunset' | 'night';
 type WeatherMode = 'auto' | 'clear' | 'mist' | 'rain' | 'storm';
-type TourMode = 'orbit' | 'drone' | 'walk';
 type UiMode = 'full' | 'balanced' | 'focus';
 type VisualPreset = 'immersive' | 'balanced' | 'performance';
 type TargetFps = 30 | 45 | 60;
@@ -37,6 +37,8 @@ interface PersistedScenePreferences {
   dynamicAtmosphere: boolean;
   constructionMode: boolean;
   constructionSpeed: number;
+  coasterIntensity: number;
+  coasterProfile: CoasterDriveProfile;
   tourMode: TourMode;
   followDroneIndex: number;
   liveWatch: boolean;
@@ -96,7 +98,9 @@ function loadScenePreferences(): Partial<PersistedScenePreferences> {
       dynamicAtmosphere: asBoolean(parsed.dynamicAtmosphere),
       constructionMode: asBoolean(parsed.constructionMode),
       constructionSpeed: asNumber(parsed.constructionSpeed),
-      tourMode: asEnum(parsed.tourMode, ['orbit', 'drone', 'walk']),
+      coasterIntensity: asNumber(parsed.coasterIntensity),
+      coasterProfile: asEnum(parsed.coasterProfile, ['comfort', 'sport', 'extreme']),
+      tourMode: asEnum(parsed.tourMode, ['orbit', 'drone', 'walk', 'coaster']),
       followDroneIndex: asNumber(parsed.followDroneIndex),
       liveWatch: asBoolean(parsed.liveWatch),
       topPanelCollapsed: asBoolean(parsed.topPanelCollapsed),
@@ -151,6 +155,12 @@ export function useScenePreferences({ generatedAt }: UseScenePreferencesParams) 
   const [constructionMode, setConstructionMode] = useState(persisted.constructionMode ?? false);
   const [constructionSpeed, setConstructionSpeed] = useState(
     persisted.constructionSpeed ?? 0.65,
+  );
+  const [coasterIntensity, setCoasterIntensity] = useState(
+    Math.max(0.65, Math.min(1.8, persisted.coasterIntensity ?? 1.1)),
+  );
+  const [coasterProfile, setCoasterProfile] = useState<CoasterDriveProfile>(
+    persisted.coasterProfile ?? 'sport',
   );
   const [tourMode, setTourMode] = useState<TourMode>(persisted.tourMode ?? 'orbit');
   const [followDroneIndex, setFollowDroneIndex] = useState(
@@ -218,6 +228,8 @@ export function useScenePreferences({ generatedAt }: UseScenePreferencesParams) 
       dynamicAtmosphere,
       constructionMode,
       constructionSpeed,
+      coasterIntensity,
+      coasterProfile,
       tourMode,
       followDroneIndex,
       liveWatch,
@@ -233,6 +245,8 @@ export function useScenePreferences({ generatedAt }: UseScenePreferencesParams) 
     autoTour,
     constructionMode,
     constructionSpeed,
+    coasterIntensity,
+    coasterProfile,
     dynamicAtmosphere,
     followDroneIndex,
     liveWatch,
@@ -313,6 +327,8 @@ export function useScenePreferences({ generatedAt }: UseScenePreferencesParams) 
     dynamicAtmosphere,
     constructionMode,
     constructionSpeed,
+    coasterIntensity,
+    coasterProfile,
     tourMode,
     followDroneIndex,
     walkBuildingPath,
@@ -344,6 +360,8 @@ export function useScenePreferences({ generatedAt }: UseScenePreferencesParams) 
     setDynamicAtmosphere,
     setConstructionMode,
     setConstructionSpeed,
+    setCoasterIntensity,
+    setCoasterProfile,
     setTourMode,
     setFollowDroneIndex,
     setWalkBuildingPath,

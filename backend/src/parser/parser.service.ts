@@ -123,6 +123,23 @@ export class ParserService {
     '.cjs',
     '.vue',
     '.svelte',
+    '.py',
+    '.java',
+    '.kt',
+    '.kts',
+    '.go',
+    '.rs',
+    '.php',
+    '.rb',
+    '.swift',
+    '.cs',
+    '.scala',
+    '.c',
+    '.cc',
+    '.cpp',
+    '.cxx',
+    '.h',
+    '.hpp',
   ]);
   private readonly ignoredImportFolders = new Set([
     'node_modules',
@@ -138,8 +155,6 @@ export class ParserService {
     'static',
     'generated',
     '__generated__',
-    'lib',
-    'libs',
   ]);
   private readonly resolveExtensions = [
     '',
@@ -206,7 +221,11 @@ export class ParserService {
     });
 
     const cached = await this.cacheService.getAny(normalizedUrl);
-    if (cached?.isFresh) {
+    const shouldBypassFreshCache =
+      cached?.isFresh &&
+      cached.payload &&
+      this.shouldBypassFreshCacheForRoads(cached.payload);
+    if (cached?.isFresh && !shouldBypassFreshCache) {
       emitProgress({
         stage: 'done',
         message: 'Loaded from cache',
@@ -215,6 +234,14 @@ export class ParserService {
 
       return cached.payload;
     }
+    if (shouldBypassFreshCache) {
+      emitProgress({
+        stage: 'checking_cache',
+        message: 'Refreshing cache to rebuild road graph',
+        percent: 6,
+      });
+    }
+    const etagForCommitFetch = shouldBypassFreshCache ? null : cached?.etag;
 
     assertActive();
     emitProgress({
@@ -241,7 +268,7 @@ export class ParserService {
         owner,
         repo,
         this.maxCommits,
-        cached?.etag,
+        etagForCommitFetch,
         ({ page, totalPages, fetchedCommits }) => {
           assertActive();
           const percent = this.resolveCommitFetchPercent(page, totalPages);
@@ -595,6 +622,21 @@ export class ParserService {
       stack: this.createEmptyStackPassport(),
       analysis: this.createEmptyAnalysis(),
     };
+  }
+
+  private shouldBypassFreshCacheForRoads(payload: RepositoryResult): boolean {
+    const analysisRoads = payload.analysis?.imports?.roads ?? 0;
+    const listedRoads = Array.isArray(payload.imports) ? payload.imports.length : 0;
+    if (analysisRoads > 0 || listedRoads > 0) {
+      return false;
+    }
+
+    const eligibleFiles = (payload.files ?? []).filter(
+      (file) =>
+        this.isImportableFile(file.path) &&
+        !this.isIgnoredForImportRoads(file.path),
+    ).length;
+    return eligibleFiles >= 2;
   }
 
   private mapFileHistories(
@@ -1911,14 +1953,91 @@ export class ParserService {
       })
       .sort((a, b) => b.count - a.count)
       .slice(0, 600);
+    const fallbackRoads =
+      roads.length > 0 ? [] : this.buildHeuristicRoads(candidates);
 
     return {
-      roads,
+      roads: roads.length > 0 ? roads : fallbackRoads,
       candidates: candidates.length,
       scanned: done,
       truncated,
       truncatedReason,
     };
+  }
+
+  private buildHeuristicRoads(candidates: FileHistory[]): ImportRoad[] {
+    if (candidates.length < 2) {
+      return [];
+    }
+
+    const maxCommits = Math.max(1, ...candidates.map((item) => item.commits.length));
+    const folderGroups = new Map<string, FileHistory[]>();
+
+    candidates.forEach((file) => {
+      const folderPath = file.folder === 'root' ? 'root' : file.folder;
+      const groupKey = folderPath.split('/')[0] || 'root';
+      const bucket = folderGroups.get(groupKey) ?? [];
+      bucket.push(file);
+      folderGroups.set(groupKey, bucket);
+    });
+
+    const edgeWeights = new Map<string, number>();
+    const edgeCap = 280;
+    const rememberEdge = (from: string, to: string, weight: number) => {
+      if (!from || !to || from === to || edgeWeights.size >= edgeCap) {
+        return;
+      }
+      const key = `${from}=>${to}`;
+      const next = Math.max(1, Math.round(weight));
+      edgeWeights.set(key, Math.max(edgeWeights.get(key) ?? 0, next));
+    };
+
+    folderGroups.forEach((group) => {
+      if (group.length < 2) {
+        return;
+      }
+
+      const ranked = [...group].sort(
+        (a, b) => b.commits.length - a.commits.length || a.path.localeCompare(b.path),
+      );
+      const anchor = ranked[0];
+      if (!anchor) {
+        return;
+      }
+
+      const chainLength = Math.min(ranked.length - 1, 18);
+      for (let index = 0; index < chainLength; index += 1) {
+        const current = ranked[index];
+        const next = ranked[index + 1];
+        if (!current || !next) {
+          continue;
+        }
+        const intensity =
+          1 +
+          ((current.commits.length + next.commits.length) / (2 * maxCommits)) * 5;
+        rememberEdge(current.path, next.path, intensity);
+      }
+
+      const fanout = Math.min(ranked.length - 1, 8);
+      for (let index = 1; index <= fanout; index += 1) {
+        const target = ranked[index];
+        if (!target) {
+          continue;
+        }
+        const intensity =
+          1 +
+          ((anchor.commits.length + target.commits.length) / (2 * maxCommits)) * 4;
+        rememberEdge(anchor.path, target.path, intensity);
+      }
+    });
+
+    return Array.from(edgeWeights.entries())
+      .map(([key, count]) => {
+        const [from, to] = key.split('=>');
+        return { from, to, count };
+      })
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 220);
   }
 
   private isImportableFile(filePath: string): boolean {

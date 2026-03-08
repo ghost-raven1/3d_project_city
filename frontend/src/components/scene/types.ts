@@ -12,7 +12,8 @@ export interface TourPoint {
   cameraOffset: [number, number, number];
 }
 
-export type TourMode = 'orbit' | 'drone' | 'walk';
+export type TourMode = 'orbit' | 'drone' | 'walk' | 'coaster';
+export type CoasterDriveProfile = 'comfort' | 'sport' | 'extreme';
 
 export interface RoadPoint {
   x: number;
@@ -78,6 +79,68 @@ export interface PointerSample {
   path: string | null;
 }
 
+export interface CoasterCameraPose {
+  x: number;
+  y: number;
+  z: number;
+  targetX: number;
+  targetY: number;
+  targetZ: number;
+  fov: number;
+  speed: number;
+  acceleration: number;
+  gForce: number;
+  lap: number;
+  emergencyBrake: boolean;
+  slope: number;
+  clearance: number;
+  throttle: number;
+  cameraMode: 'front' | 'chase';
+  lapTimeSec: number;
+  bestLapSec: number | null;
+  topSpeed: number;
+}
+
+export interface CoasterTelemetry {
+  speed: number;
+  acceleration: number;
+  gForce: number;
+  lap: number;
+  emergencyBrake: boolean;
+  slope: number;
+  clearance: number;
+  throttle: number;
+  cameraMode: 'front' | 'chase';
+  lapTimeSec: number;
+  bestLapSec: number | null;
+  topSpeed: number;
+}
+
+export interface MusicSpectrumBands {
+  subBass: number;
+  bass: number;
+  lowMid: number;
+  mid: number;
+  highMid: number;
+  high: number;
+}
+
+export interface MusicSpectrumTelemetry {
+  bands: MusicSpectrumBands;
+  energy: number;
+  beat: number;
+  playing: boolean;
+  reactive: boolean;
+  timestampMs: number;
+}
+
+export interface CoasterControlInput {
+  manualThrottle: number | null;
+  cameraToggleSeq: number;
+  resetSeq: number;
+  regenerateSeq: number;
+}
+
 export type ScenePointer = RoomPointer;
 
 export interface ConstructionWindow {
@@ -104,4 +167,7 @@ export interface ScenePerformanceTelemetry {
   postFxQuality: PostFxQuality;
   adaptiveDpr: number;
   adaptiveLoadScale: number;
+  fovBuildingCoverage: number;
+  fovRoadCoverage: number;
+  fovDistrictCoverage: number;
 }

@@ -10,12 +10,13 @@ export interface TimelineBounds {
 export function folderToDistrictColor(
   folder: string,
   hueOffset = 0,
-  saturation = 45,
-  lightness = 56,
+  saturation = 60,
+  lightness = 55,
 ): string {
   const hash = hashString(folder);
-  const hue = (hash + hueOffset) % 360;
-  return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+  // Tron palette corridor: keep districts in cyan-blue hues.
+  const hue = 185 + ((hash + hueOffset) % 56);
+  return `hsl(${hue}, ${Math.max(48, saturation)}%, ${Math.max(44, lightness)}%)`;
 }
 
 export function classifyBuildingMood(file: PositionedFileHistory): BuildingMood {

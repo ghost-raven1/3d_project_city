@@ -2,13 +2,14 @@
   --font-display: 'Orbitron', 'Oxanium', 'Space Grotesk', 'Segoe UI', sans-serif;
   --font-body: 'Oxanium', 'Space Grotesk', 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
-  --bg-core: #040b16;
-  --bg-mid: #071424;
-  --bg-edge: #0a1b31;
-  --grid-line: rgb(96 156 214 / 13%);
-  --neon-cyan: #42e8ff;
-  --neon-teal: #56ffd5;
-  --neon-orange: #ff9a4a;
+  --bg-core: #020611;
+  --bg-mid: #051124;
+  --bg-edge: #081a34;
+  --grid-line: rgb(92 214 255 / 14%);
+  --grid-glow: rgb(95 239 255 / 6%);
+  --neon-cyan: #58f1ff;
+  --neon-teal: #6efee6;
+  --neon-blue: #59b0ff;
   font-family: var(--font-body);
 }
 
@@ -36,6 +37,15 @@
   }
 }
 
+@keyframes city-diagonal-shift {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(30px, -30px, 0);
+  }
+}
+
 html,
 body,
 #root {
@@ -50,9 +60,9 @@ body {
   font-family: var(--font-body);
   color: #e4f3ff;
   background:
-    radial-gradient(circle at 14% 12%, rgb(68 235 255 / 14%), transparent 34%),
-    radial-gradient(circle at 84% 18%, rgb(255 153 80 / 12%), transparent 36%),
-    radial-gradient(circle at 50% 88%, rgb(57 130 255 / 16%), transparent 44%),
+    radial-gradient(circle at 14% 12%, rgb(88 241 255 / 16%), transparent 36%),
+    radial-gradient(circle at 86% 16%, rgb(89 176 255 / 14%), transparent 38%),
+    radial-gradient(circle at 48% 86%, rgb(70 187 255 / 15%), transparent 42%),
     linear-gradient(142deg, var(--bg-core) 0%, var(--bg-mid) 46%, var(--bg-edge) 100%);
 }
 
@@ -62,8 +72,8 @@ body::before {
   inset: -8%;
   pointer-events: none;
   background:
-    radial-gradient(circle at 16% 26%, rgb(77 239 255 / 20%), transparent 32%),
-    radial-gradient(circle at 82% 72%, rgb(73 151 255 / 16%), transparent 34%);
+    radial-gradient(circle at 16% 26%, rgb(95 242 255 / 24%), transparent 32%),
+    radial-gradient(circle at 82% 72%, rgb(89 176 255 / 18%), transparent 35%);
   mix-blend-mode: screen;
   filter: blur(42px);
   animation: city-bg-drift 18s ease-in-out infinite;
@@ -77,10 +87,19 @@ body::after {
   pointer-events: none;
   background-image:
     linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px),
+    repeating-linear-gradient(
+      -45deg,
+      transparent 0px,
+      transparent 18px,
+      var(--grid-glow) 18px,
+      var(--grid-glow) 19px
+    );
   background-size: 40px 40px;
-  opacity: 0.36;
-  animation: city-grid-shift 22s linear infinite;
+  opacity: 0.4;
+  animation:
+    city-grid-shift 22s linear infinite,
+    city-diagonal-shift 30s linear infinite;
   z-index: 0;
 }
 

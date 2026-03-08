@@ -30,6 +30,9 @@ interface ProductStatusDockProps {
   postFxQuality: 'high' | 'medium' | 'low';
   adaptiveDpr: number;
   adaptiveLoadScale: number;
+  fovBuildingCoverage: number;
+  fovRoadCoverage: number;
+  fovDistrictCoverage: number;
   sceneFps: number;
   effectiveTimeOfDay?: 'auto' | 'dawn' | 'day' | 'sunset' | 'night';
   effectiveWeatherMode?: 'auto' | 'clear' | 'mist' | 'rain' | 'storm';
@@ -54,6 +57,10 @@ function statusLabel(status: ParseStatus): string {
   return 'Idle';
 }
 
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
 export function ProductStatusDock({
   parseStatus,
   progress,
@@ -67,6 +74,9 @@ export function ProductStatusDock({
   postFxQuality,
   adaptiveDpr,
   adaptiveLoadScale,
+  fovBuildingCoverage,
+  fovRoadCoverage,
+  fovDistrictCoverage,
   sceneFps,
   effectiveTimeOfDay = 'day',
   effectiveWeatherMode = 'clear',
@@ -118,6 +128,57 @@ export function ProductStatusDock({
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   } as const;
+  const averageFovCoverage =
+    (fovBuildingCoverage + fovRoadCoverage + fovDistrictCoverage) / 3;
+  const parserHealth =
+    parseStatus === 'done'
+      ? 1
+      : parseStatus === 'error'
+        ? 0.15
+        : parseBusy
+          ? clamp01(Math.max(0.24, progress / 100))
+          : 0.48;
+  const collabHealth = roomConnected ? 1 : liveWatch ? 0.4 : 0.58;
+  const narratorHealth =
+    narratorStatus === 'error'
+      ? 0.2
+      : narratorStatus === 'thinking'
+        ? 0.82
+        : 0.94;
+  const renderHealth = clamp01(
+    (sceneFps > 0 ? Math.min(1, sceneFps / 60) : 0.56) * 0.58 +
+      clamp01(adaptiveLoadScale) * 0.42,
+  );
+  const opsScore = Math.round(
+    clamp01(
+      parserHealth * 0.28 +
+        collabHealth * 0.14 +
+        narratorHealth * 0.14 +
+        renderHealth * 0.26 +
+        clamp01(averageFovCoverage) * 0.18,
+    ) * 100,
+  );
+  const opsColor =
+    opsScore >= 82
+      ? '#8cf3bf'
+      : opsScore >= 64
+        ? '#9ce8ff'
+        : opsScore >= 42
+          ? '#ffd38a'
+          : '#ff8e9f';
+  const healthRows = [
+    { id: 'parser', label: 'Parser', value: parserHealth },
+    { id: 'collab', label: 'Collab', value: collabHealth },
+    { id: 'narrator', label: 'Narrator', value: narratorHealth },
+    { id: 'render', label: 'Render', value: renderHealth },
+    { id: 'visibility', label: 'Visibility', value: averageFovCoverage },
+  ];
+  const fovChipColor =
+    averageFovCoverage < 0.62
+      ? '#9cf0c6'
+      : averageFovCoverage < 0.84
+        ? '#9fe9ff'
+        : '#b8c9e8';
   const shouldShowFxChip =
     !compact ||
     postFxQuality !== 'high' ||
@@ -181,6 +242,98 @@ export function ProductStatusDock({
         >
           System Pulse
         </Typography>
+        <Stack direction="row" spacing={0.6} alignItems="center" flexWrap="wrap">
+          <Chip
+            size="small"
+            label={`Ops score ${opsScore}%`}
+            sx={{
+              ...panelChipSx,
+              color: '#e8f6ff',
+              borderColor: alpha(opsColor, 0.72),
+              backgroundColor: alpha(opsColor, 0.16),
+              '& .MuiChip-label': {
+                ...chipLabelSx,
+                fontWeight: 700,
+                letterSpacing: '0.04em',
+              },
+            }}
+            variant="outlined"
+          />
+          <Chip
+            size="small"
+            label={stage ? `Stage ${stage}` : 'Stage ready'}
+            sx={{
+              ...panelChipSx,
+              color: '#d8e9ff',
+              borderColor: alpha('#94b9df', 0.5),
+              backgroundColor: alpha('#0f223f', 0.5),
+              '& .MuiChip-label': chipLabelSx,
+            }}
+            variant="outlined"
+          />
+        </Stack>
+        <Box
+          sx={{
+            ...panelInsetSx,
+            px: 0.7,
+            py: 0.6,
+          }}
+        >
+          <Stack spacing={0.42}>
+            {healthRows.map((row) => (
+              <Stack key={row.id} direction="row" spacing={0.6} alignItems="center">
+                <Typography
+                  variant="caption"
+                  sx={{
+                    width: 58,
+                    flexShrink: 0,
+                    color: alpha('#bcdcf8', 0.9),
+                    letterSpacing: '0.03em',
+                  }}
+                >
+                  {row.label}
+                </Typography>
+                <Box
+                  sx={{
+                    flex: 1,
+                    minWidth: 0,
+                    height: 5,
+                    borderRadius: 999,
+                    overflow: 'hidden',
+                    backgroundColor: alpha('#7f97bf', 0.26),
+                  }}
+                >
+                  <Box
+                    sx={{
+                      width: `${Math.round(clamp01(row.value) * 100)}%`,
+                      height: '100%',
+                      borderRadius: 999,
+                      background:
+                        row.value >= 0.82
+                          ? 'linear-gradient(90deg, #6deec1, #9ff7d5)'
+                          : row.value >= 0.62
+                            ? 'linear-gradient(90deg, #6ad3ff, #9cefff)'
+                            : row.value >= 0.4
+                              ? 'linear-gradient(90deg, #ffc470, #ffe29b)'
+                              : 'linear-gradient(90deg, #ff8b9d, #ffb2be)',
+                    }}
+                  />
+                </Box>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    minWidth: 34,
+                    textAlign: 'right',
+                    color: alpha('#d2e9ff', 0.9),
+                    fontFamily: '"JetBrains Mono", monospace',
+                  }}
+                >
+                  {Math.round(clamp01(row.value) * 100)}%
+                </Typography>
+              </Stack>
+            ))}
+          </Stack>
+        </Box>
         <Stack direction="row" spacing={0.6} alignItems="center" flexWrap="wrap">
           <Chip
             size="small"
@@ -290,6 +443,22 @@ export function ProductStatusDock({
               variant="outlined"
             />
           )}
+          <Chip
+            size="small"
+            label={
+              compact
+                ? `FOV B${Math.round(fovBuildingCoverage * 100)} R${Math.round(fovRoadCoverage * 100)} D${Math.round(fovDistrictCoverage * 100)}`
+                : `FOV coverage · B ${Math.round(fovBuildingCoverage * 100)}% · R ${Math.round(fovRoadCoverage * 100)}% · D ${Math.round(fovDistrictCoverage * 100)}%`
+            }
+            sx={{
+              ...panelChipSx,
+              color: '#d8e9ff',
+              borderColor: alpha(fovChipColor, 0.5),
+              backgroundColor: alpha('#0f223f', 0.5),
+              '& .MuiChip-label': chipLabelSx,
+            }}
+            variant="outlined"
+          />
           {sceneFps > 0 && (
             <Chip
               size="small"

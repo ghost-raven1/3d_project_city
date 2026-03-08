@@ -177,6 +177,17 @@ export function CyberpunkCanvasOverlay({
       context.fillStyle = topGlow;
       context.fillRect(0, 0, width, height);
 
+      const sweepWidth = Math.max(90, width * 0.18);
+      const sweepX =
+        ((elapsed * (72 + fx * 24) + (seed % 57) * 1.4) % (width + sweepWidth * 2)) -
+        sweepWidth;
+      const sweep = context.createLinearGradient(sweepX, 0, sweepX + sweepWidth, 0);
+      sweep.addColorStop(0, 'rgba(0,0,0,0)');
+      sweep.addColorStop(0.5, rgba(mixRgb(baseColor, tintColor, 0.7), 0.11 * fx));
+      sweep.addColorStop(1, 'rgba(0,0,0,0)');
+      context.fillStyle = sweep;
+      context.fillRect(0, 0, width, height);
+
       const vignette = context.createRadialGradient(
         width * 0.5,
         height * 0.55,
@@ -249,6 +260,47 @@ export function CyberpunkCanvasOverlay({
         }
         context.restore();
       }
+
+      const drawCorner = (x: number, y: number, flipX: number, flipY: number) => {
+        const corner = Math.max(14, Math.min(width, height) * 0.035);
+        context.beginPath();
+        context.moveTo(x, y + corner * flipY);
+        context.lineTo(x, y);
+        context.lineTo(x + corner * flipX, y);
+        context.stroke();
+      };
+
+      context.save();
+      context.strokeStyle = rgba(mixRgb(baseColor, tintColor, 0.5), 0.42 * fx);
+      context.lineWidth = 1.4;
+      drawCorner(8, 8, 1, 1);
+      drawCorner(width - 8, 8, -1, 1);
+      drawCorner(8, height - 8, 1, -1);
+      drawCorner(width - 8, height - 8, -1, -1);
+      context.restore();
+
+      context.save();
+      const hudX = width - 152;
+      const hudY = 14;
+      const hudW = 132;
+      const hudH = 54;
+      context.strokeStyle = rgba(baseColor, 0.3 * fx);
+      context.lineWidth = 1;
+      context.strokeRect(hudX, hudY, hudW, hudH);
+      for (let index = 0; index < 7; index += 1) {
+        const unit = (Math.sin(elapsed * (1.4 + index * 0.22) + index + seed * 0.01) + 1) * 0.5;
+        const barW = 14 + unit * 102;
+        const y = hudY + 7 + index * 6.5;
+        const barGradient = context.createLinearGradient(hudX + 4, y, hudX + 4 + barW, y);
+        barGradient.addColorStop(0, rgba(tintColor, 0.18 * fx));
+        barGradient.addColorStop(1, rgba(baseColor, 0.55 * fx));
+        context.strokeStyle = barGradient;
+        context.beginPath();
+        context.moveTo(hudX + 4, y);
+        context.lineTo(hudX + 4 + barW, y);
+        context.stroke();
+      }
+      context.restore();
 
       context.save();
       const borderGlow = context.createLinearGradient(0, 0, width, height);

@@ -21,7 +21,7 @@ export type NarratorUiPanelTarget =
 
 export type NarratorUiAction =
   | { type: 'set_view_mode'; value: 'overview' | 'architecture' | 'risk' | 'stack' }
-  | { type: 'set_tour_mode'; value: 'orbit' | 'drone' | 'walk' }
+  | { type: 'set_tour_mode'; value: 'orbit' | 'drone' | 'walk' | 'coaster' }
   | { type: 'set_compare_enabled'; value: 'on' | 'off' }
   | { type: 'set_compare_mode'; value: 'ghost' | 'split' }
   | { type: 'set_panel_visibility'; target: NarratorUiPanelTarget; value: 'on' | 'off' }
@@ -37,7 +37,7 @@ export interface NarratorActionPayload {
   selectedPath?: string | null;
   compareEnabled?: boolean;
   compareLabel?: string | null;
-  tourMode?: 'orbit' | 'drone' | 'walk' | null;
+  tourMode?: 'orbit' | 'drone' | 'walk' | 'coaster' | null;
   interaction?: string | null;
   interactionValue?: string | null;
   sourceMessageId?: string | null;

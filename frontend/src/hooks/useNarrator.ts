@@ -254,10 +254,6 @@ export function useNarrator() {
 
   const sendNarratorAction = useCallback(
     (payload: NarratorActionPayload) => {
-      if (!socket.connected) {
-        return;
-      }
-
       const key = `${payload.type}|${payload.viewMode ?? ''}|${payload.selectedPath ?? ''}|${
         payload.timelineLabel ?? ''
       }|${payload.compareEnabled ? '1' : '0'}|${payload.tourMode ?? ''}|${
@@ -270,8 +266,8 @@ export function useNarrator() {
       }
       lastActionRef.current = { key, at: now };
 
-      if (pendingRef.current) {
-        const next = {
+      const enqueue = () => {
+        const next: QueuedNarration = {
           payload,
           priority: actionPriority(payload),
           queuedAt: Date.now(),
@@ -284,6 +280,18 @@ export function useNarrator() {
         ) {
           queuedRef.current = next;
         }
+      };
+
+      if (pendingRef.current) {
+        enqueue();
+        return;
+      }
+
+      if (!socket.connected) {
+        enqueue();
+        setStatus('idle');
+        setError('Narrator reconnecting...');
+        socket.connect();
         return;
       }
 

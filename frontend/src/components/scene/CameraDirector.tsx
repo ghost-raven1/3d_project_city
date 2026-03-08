@@ -5,6 +5,7 @@ import { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { dronePoseAt } from './drone-motion';
 import {
   BuildingFootprint,
+  CoasterCameraPose,
   ImportRoadSegment,
   SceneViewMode,
   TourMode,
@@ -26,6 +27,7 @@ interface CameraDirectorProps {
   orbitFocusLerp: number;
   orbitCameraLerp: number;
   autoTourCadenceSec: number;
+  coasterCameraPoseRef: RefObject<CoasterCameraPose | null>;
   onWalkBuildingChange?: (path: string | null) => void;
 }
 
@@ -151,6 +153,21 @@ function pushOutsideFootprint(
   return { x, z: maxZ };
 }
 
+function hasFiniteCoasterPose(pose: CoasterCameraPose | null): pose is CoasterCameraPose {
+  if (!pose) {
+    return false;
+  }
+  return (
+    Number.isFinite(pose.x) &&
+    Number.isFinite(pose.y) &&
+    Number.isFinite(pose.z) &&
+    Number.isFinite(pose.targetX) &&
+    Number.isFinite(pose.targetY) &&
+    Number.isFinite(pose.targetZ) &&
+    Number.isFinite(pose.fov)
+  );
+}
+
 function resolveOrbitCollision(
   focus: Vector3,
   desired: OrbitCollisionPosition,
@@ -268,6 +285,7 @@ export function CameraDirector({
   orbitFocusLerp,
   orbitCameraLerp,
   autoTourCadenceSec,
+  coasterCameraPoseRef,
   onWalkBuildingChange,
 }: CameraDirectorProps) {
   const { camera, clock, gl } = useThree();
@@ -442,8 +460,13 @@ export function CameraDirector({
         fov: number;
         updateProjectionMatrix: () => void;
       };
+      const coasterFov = Number.isFinite(coasterCameraPoseRef.current?.fov)
+        ? (coasterCameraPoseRef.current?.fov as number)
+        : null;
       const targetFov =
-        tourMode === 'walk'
+        tourMode === 'coaster'
+          ? Math.max(60, coasterFov ?? baseFov + 12)
+          : tourMode === 'walk'
           ? Math.max(58, baseFov + 7)
           : tourMode === 'drone'
             ? Math.max(50, baseFov + 4)
@@ -480,6 +503,30 @@ export function CameraDirector({
       }
 
       modeRef.current = tourMode;
+    }
+
+    if (tourMode === 'coaster') {
+      const coasterPose = coasterCameraPoseRef.current;
+      if (hasFiniteCoasterPose(coasterPose)) {
+        lastDronePositionRef.current.set(coasterPose.x, coasterPose.y, coasterPose.z);
+        targetVector.set(
+          coasterPose.targetX,
+          coasterPose.targetY,
+          coasterPose.targetZ,
+        );
+        cameraVector.set(coasterPose.x, coasterPose.y, coasterPose.z);
+        const firstPerson = coasterPose.cameraMode === 'front';
+        if (firstPerson) {
+          // True first-person: no follow lag, camera stays locked to seat pose.
+          controls.target.copy(targetVector);
+          camera.position.copy(cameraVector);
+        } else {
+          controls.target.lerp(targetVector, 0.72);
+          camera.position.lerp(cameraVector, 0.82);
+        }
+        controls.update();
+        return;
+      }
     }
 
     if (tourMode === 'drone') {

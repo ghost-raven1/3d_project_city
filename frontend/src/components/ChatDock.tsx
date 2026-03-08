@@ -105,7 +105,7 @@ export function ChatDock({
   onClearError,
 }: ChatDockProps) {
   const isShortViewport = useMediaQuery('(max-height: 860px)');
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const [draft, setDraft] = useState('');
   const [replyToId, setReplyToId] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<ChatAttachmentDraft[]>([]);

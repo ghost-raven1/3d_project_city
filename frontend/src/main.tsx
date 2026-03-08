@@ -20,9 +20,9 @@ const theme = createTheme({
       contrastText: '#03131f',
     },
     secondary: {
-      main: '#ff9d52',
-      light: '#ffc588',
-      dark: '#d6782f',
+      main: '#5cb4ff',
+      light: '#9fd5ff',
+      dark: '#2c76be',
     },
     info: {
       main: '#7ea8ff',
@@ -31,14 +31,14 @@ const theme = createTheme({
       main: '#64eeb8',
     },
     warning: {
-      main: '#ffbe68',
+      main: '#ffd166',
     },
     error: {
       main: '#ff7f9d',
     },
     background: {
-      default: '#030812',
-      paper: '#071629',
+      default: '#020711',
+      paper: '#06172b',
     },
     text: {
       primary: '#e7f6ff',
@@ -47,7 +47,7 @@ const theme = createTheme({
     divider: alpha('#79d8ff', 0.24),
   },
   shape: {
-    borderRadius: 14,
+    borderRadius: 10,
   },
   typography: {
     fontFamily: bodyFont,
@@ -97,12 +97,12 @@ const theme = createTheme({
         },
         contained: {
           background:
-            'linear-gradient(96deg, rgba(56,210,255,0.96) 0%, rgba(109,255,226,0.94) 50%, rgba(124,150,255,0.9) 100%)',
+            'linear-gradient(96deg, rgba(74,230,255,0.96) 0%, rgba(92,180,255,0.94) 55%, rgba(90,149,255,0.9) 100%)',
           color: '#031426',
           boxShadow: `0 8px 24px ${alpha('#2fd4ff', 0.34)}`,
           '&:hover': {
             background:
-              'linear-gradient(96deg, rgba(44,194,244,0.96) 0%, rgba(88,245,213,0.94) 50%, rgba(107,133,239,0.92) 100%)',
+              'linear-gradient(96deg, rgba(54,213,245,0.96) 0%, rgba(74,162,238,0.94) 55%, rgba(85,139,239,0.92) 100%)',
             transform: 'translateY(-1px)',
           },
         },

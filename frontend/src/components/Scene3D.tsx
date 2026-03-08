@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
@@ -6,9 +6,16 @@ import {
   AmbientLight,
   Color,
   DirectionalLight,
+  DoubleSide,
   Fog,
+  Frustum,
+  Group,
   HemisphereLight,
+  Matrix4,
+  MeshStandardMaterial,
   PointLight,
+  Sphere,
+  Vector3,
   WebGLRenderTarget,
 } from 'three';
 import {
@@ -38,6 +45,7 @@ import { CityTerrain } from './scene/CityTerrain';
 import { ComparisonOverlay } from './scene/ComparisonOverlay';
 import { CyberpunkAtmosphere } from './scene/CyberpunkAtmosphere';
 import { DistrictOverlays } from './scene/DistrictOverlays';
+import { EventFireworks } from './scene/EventFireworks';
 import { GroundEventAgents } from './scene/GroundEventAgents';
 import { HotspotBillboards } from './scene/HotspotBillboards';
 import { InsightSignals } from './scene/InsightSignals';
@@ -46,12 +54,18 @@ import { ModeSignatureLayer } from './scene/ModeSignatureLayer';
 import { ProjectEventSignals } from './scene/ProjectEventSignals';
 import { ProjectEventRoutes } from './scene/ProjectEventRoutes';
 import { RoadNetwork } from './scene/RoadNetwork';
+import { RollerCoaster } from './scene/RollerCoaster';
 import { StackPassportTowers } from './scene/StackPassportTowers';
 import {
   BuildingFootprint,
+  CoasterCameraPose,
+  CoasterControlInput,
+  CoasterDriveProfile,
+  CoasterTelemetry,
   ConstructionWindow,
   DistrictInfo,
   ImportRoadSegment,
+  MusicSpectrumTelemetry,
   PostFxQuality,
   PointerSample,
   ProjectCityEvent,
@@ -85,6 +99,7 @@ interface Scene3DProps {
   showPostProcessing: boolean;
   adaptivePostFx: boolean;
   modePresetIntensity: number;
+  coasterIntensity: number;
   visualPreset: 'immersive' | 'balanced' | 'performance';
   targetFps: 30 | 45 | 60;
   renderProfileLock: 'auto' | 'cinematic' | 'balanced' | 'performance';
@@ -98,6 +113,9 @@ interface Scene3DProps {
   constructionWindowByPath: Map<string, ConstructionWindow>;
   constructionMode: boolean;
   constructionProgress: number;
+  coasterProfile: CoasterDriveProfile;
+  coasterControlInput?: CoasterControlInput | null;
+  musicSpectrum?: MusicSpectrumTelemetry | null;
   onHover: (path: string | null) => void;
   onSelect: (path: string | null) => void;
   onCaptureReady?: (capture: (() => Promise<Blob | null>) | null) => void;
@@ -105,6 +123,7 @@ interface Scene3DProps {
   onPerformanceTelemetry?: (telemetry: ScenePerformanceTelemetry) => void;
   onFollowDroneChange?: (index: number) => void;
   onWalkBuildingChange?: (path: string | null) => void;
+  onCoasterTelemetry?: (telemetry: CoasterTelemetry | null) => void;
   onPointerSample?: (sample: PointerSample) => void;
 }
 
@@ -192,6 +211,164 @@ const PostProcessingLayerLazy = lazy(async () => {
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
+}
+
+function finiteNumber(value: number, fallback = 0): number {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+interface LayoutAnchorPoint {
+  x: number;
+  z: number;
+}
+
+function resolveRenamedAnchorPath(
+  file: PositionedFileHistory,
+  anchors: Map<string, LayoutAnchorPoint>,
+): string | null {
+  for (let index = file.commits.length - 1; index >= 0; index -= 1) {
+    const commit = file.commits[index];
+    if (!commit?.previousPath) {
+      continue;
+    }
+    const status = (commit.status ?? '').toLowerCase();
+    const renamed =
+      status === 'renamed' ||
+      status === 'renamed_to' ||
+      status === 'renamed_from' ||
+      status === 'renamed-to' ||
+      status === 'renamed-from';
+    if (!renamed) {
+      continue;
+    }
+    if (anchors.has(commit.previousPath)) {
+      return commit.previousPath;
+    }
+  }
+  return null;
+}
+
+function stabilizeLayoutFiles(
+  files: PositionedFileHistory[],
+  anchors: Map<string, LayoutAnchorPoint>,
+  updateAnchors: boolean,
+): PositionedFileHistory[] {
+  if (files.length === 0) {
+    if (updateAnchors) {
+      anchors.clear();
+    }
+    return files;
+  }
+
+  if (updateAnchors && anchors.size > 0) {
+    let overlap = 0;
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      if (!file) {
+        continue;
+      }
+      if (anchors.has(file.path)) {
+        overlap += 1;
+        continue;
+      }
+      const renamedPath = resolveRenamedAnchorPath(file, anchors);
+      if (renamedPath) {
+        overlap += 1;
+      }
+    }
+
+    // No overlap usually means a brand-new repository/session, so anchors must reset.
+    if (overlap === 0) {
+      anchors.clear();
+    }
+  }
+
+  return files.map((file) => {
+    const directAnchor = anchors.get(file.path);
+    const renamedPath = !directAnchor ? resolveRenamedAnchorPath(file, anchors) : null;
+    const renamedAnchor = renamedPath ? anchors.get(renamedPath) : undefined;
+    const anchor = directAnchor ?? renamedAnchor;
+    const stabilizedFile = anchor
+      ? {
+          ...file,
+          x: anchor.x,
+          z: anchor.z,
+        }
+      : file;
+
+    if (updateAnchors) {
+      anchors.set(stabilizedFile.path, {
+        x: stabilizedFile.x,
+        z: stabilizedFile.z,
+      });
+    }
+
+    return stabilizedFile;
+  });
+}
+
+function sanitizeCoasterPose(pose: CoasterCameraPose | null): CoasterCameraPose | null {
+  if (!pose) {
+    return null;
+  }
+
+  const x = finiteNumber(pose.x, 0);
+  const y = finiteNumber(pose.y, 1.4);
+  const z = finiteNumber(pose.z, 0);
+  const targetX = finiteNumber(pose.targetX, x + 1);
+  const targetY = finiteNumber(pose.targetY, y);
+  const targetZ = finiteNumber(pose.targetZ, z);
+  const fov = Math.max(48, Math.min(110, finiteNumber(pose.fov, 66)));
+  const speed = Math.max(0, finiteNumber(pose.speed, 0));
+  const acceleration = finiteNumber(pose.acceleration, 0);
+  const gForce = Math.max(0.2, Math.min(6, finiteNumber(pose.gForce, 1)));
+  const lap = Math.max(0, Math.floor(finiteNumber(pose.lap, 0)));
+  const slope = finiteNumber(pose.slope, 0);
+  const clearance = Number.isFinite(pose.clearance)
+    ? pose.clearance
+    : Number.POSITIVE_INFINITY;
+  const throttle = Math.max(-1, Math.min(1, finiteNumber(pose.throttle, 0)));
+  const lapTimeSec = Math.max(0, finiteNumber(pose.lapTimeSec, 0));
+  const bestLapSec =
+    pose.bestLapSec === null
+      ? null
+      : Number.isFinite(pose.bestLapSec)
+        ? Math.max(0, pose.bestLapSec)
+        : null;
+  const topSpeed = Math.max(speed, finiteNumber(pose.topSpeed, speed));
+
+  const hasFiniteCameraVectors =
+    Number.isFinite(x) &&
+    Number.isFinite(y) &&
+    Number.isFinite(z) &&
+    Number.isFinite(targetX) &&
+    Number.isFinite(targetY) &&
+    Number.isFinite(targetZ);
+  if (!hasFiniteCameraVectors) {
+    return null;
+  }
+
+  return {
+    x,
+    y,
+    z,
+    targetX,
+    targetY,
+    targetZ,
+    fov,
+    speed,
+    acceleration,
+    gForce,
+    lap,
+    emergencyBrake: Boolean(pose.emergencyBrake),
+    slope,
+    clearance,
+    throttle,
+    cameraMode: pose.cameraMode === 'chase' ? 'chase' : 'front',
+    lapTimeSec,
+    bestLapSec,
+    topSpeed,
+  };
 }
 
 function blendHex(colorA: string, colorB: string, factor: number): string {
@@ -347,6 +524,127 @@ function SceneLightingRig({
   );
 }
 
+function CityCinematicAccentLayer({
+  cityBounds,
+  accentColor,
+  mode,
+  quality,
+  weather,
+}: {
+  cityBounds: {
+    centerX: number;
+    centerZ: number;
+    size: number;
+  };
+  accentColor: string;
+  mode: SceneViewMode;
+  quality: PostFxQuality;
+  weather: 'clear' | 'mist' | 'rain' | 'storm';
+}) {
+  const shellRef = useRef<Group | null>(null);
+  const ringMaterialRefs = useRef<Array<MeshStandardMaterial | null>>([]);
+  const wallMaterialRef = useRef<MeshStandardMaterial | null>(null);
+  const haloMaterialRef = useRef<MeshStandardMaterial | null>(null);
+  const qualityScale = quality === 'high' ? 1 : quality === 'medium' ? 0.74 : 0.5;
+  const modeBoost =
+    mode === 'risk' ? 1.28 : mode === 'architecture' ? 1.14 : mode === 'stack' ? 0.92 : 1;
+  const weatherBoost = weather === 'storm' ? 1.24 : weather === 'rain' ? 1.12 : weather === 'mist' ? 1.06 : 1;
+
+  useFrame(({ clock }) => {
+    const t = clock.elapsedTime;
+    if (shellRef.current) {
+      shellRef.current.rotation.y += 0.00042 + modeBoost * 0.00016;
+    }
+
+    ringMaterialRefs.current.forEach((material, index) => {
+      if (!material) {
+        return;
+      }
+      const wave = 0.34 + Math.max(0, Math.sin(t * (1.3 + index * 0.27) + index * 0.85)) * 0.88;
+      material.emissiveIntensity = (0.3 + wave * 0.58) * qualityScale * modeBoost * weatherBoost;
+      material.opacity = Math.max(
+        0.045,
+        (0.08 + wave * 0.08) * qualityScale * (mode === 'stack' ? 0.84 : 1),
+      );
+    });
+
+    if (wallMaterialRef.current) {
+      const wave = 0.3 + Math.max(0, Math.sin(t * 1.05 + 0.6)) * 0.7;
+      wallMaterialRef.current.emissiveIntensity = (0.22 + wave * 0.34) * qualityScale * weatherBoost;
+      wallMaterialRef.current.opacity = (0.03 + wave * 0.04) * qualityScale;
+    }
+
+    if (haloMaterialRef.current) {
+      const haloPulse = 0.35 + Math.max(0, Math.sin(t * 2.3 + 0.2)) * 0.86;
+      haloMaterialRef.current.emissiveIntensity = (0.6 + haloPulse * 0.92) * qualityScale * modeBoost;
+      haloMaterialRef.current.opacity = (0.09 + haloPulse * 0.11) * qualityScale;
+    }
+  });
+
+  return (
+    <group ref={shellRef}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[cityBounds.centerX, 0.05, cityBounds.centerZ]}>
+        <ringGeometry args={[cityBounds.size * 0.58, cityBounds.size * 0.64, 180]} />
+        <meshStandardMaterial
+          ref={(node) => {
+            ringMaterialRefs.current[0] = node;
+          }}
+          color={accentColor}
+          emissive={accentColor}
+          transparent
+          opacity={0.12 * qualityScale}
+          metalness={0.08}
+          roughness={0.42}
+        />
+      </mesh>
+
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[cityBounds.centerX, 0.07, cityBounds.centerZ]}>
+        <ringGeometry args={[cityBounds.size * 0.72, cityBounds.size * 0.79, 180]} />
+        <meshStandardMaterial
+          ref={(node) => {
+            ringMaterialRefs.current[1] = node;
+          }}
+          color={accentColor}
+          emissive={accentColor}
+          transparent
+          opacity={0.08 * qualityScale}
+          metalness={0.12}
+          roughness={0.5}
+        />
+      </mesh>
+
+      {quality !== 'low' && (
+        <mesh position={[cityBounds.centerX, 3.12, cityBounds.centerZ]}>
+          <cylinderGeometry args={[cityBounds.size * 0.58, cityBounds.size * 0.64, 6.24, 110, 1, true]} />
+          <meshStandardMaterial
+            ref={wallMaterialRef}
+            color={accentColor}
+            emissive={accentColor}
+            transparent
+            opacity={0.06}
+            side={DoubleSide}
+            metalness={0.12}
+            roughness={0.54}
+          />
+        </mesh>
+      )}
+
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[cityBounds.centerX, 7.18, cityBounds.centerZ]}>
+        <ringGeometry args={[cityBounds.size * 0.16, cityBounds.size * 0.21, 100]} />
+        <meshStandardMaterial
+          ref={haloMaterialRef}
+          color="#e7f7ff"
+          emissive={accentColor}
+          transparent
+          opacity={0.18 * qualityScale}
+          metalness={0.18}
+          roughness={0.34}
+        />
+      </mesh>
+    </group>
+  );
+}
+
 function CaptureBridge({
   onCaptureReady,
 }: {
@@ -442,6 +740,272 @@ function FpsProbe({
       onFpsUpdate(framesRef.current / Math.max(0.0001, elapsedRef.current));
       elapsedRef.current = 0;
       framesRef.current = 0;
+    }
+  });
+
+  return null;
+}
+
+interface FovBound {
+  key: string;
+  centerX: number;
+  centerY: number;
+  centerZ: number;
+  radius: number;
+}
+
+const FOV_BUILDING_HOLD_SEC = 0.34;
+const FOV_ROAD_HOLD_SEC = 0.24;
+const FOV_DISTRICT_HOLD_SEC = 0.44;
+
+function buildFovBounds(footprints: BuildingFootprint[]): FovBound[] {
+  return footprints.map((footprint) => {
+    const centerY = Math.max(0.45, footprint.topY * 0.42);
+    const radius = Math.max(
+      1.2,
+      Math.hypot(footprint.width * 0.5, footprint.depth * 0.5, footprint.topY * 0.46) +
+        2.4,
+    );
+    return {
+      key: footprint.path,
+      centerX: footprint.x,
+      centerY,
+      centerZ: footprint.z,
+      radius,
+    };
+  });
+}
+
+function buildRoadFovBounds(segments: ImportRoadSegment[]): FovBound[] {
+  return segments.map((segment) => {
+    const radius = Math.max(
+      1.8,
+      segment.length * 0.52 + Math.max(segment.width, segment.glowWidth) * 6 + 1.2,
+    );
+    return {
+      key: segment.id,
+      centerX: segment.x,
+      centerY: 0.22,
+      centerZ: segment.z,
+      radius,
+    };
+  });
+}
+
+function buildDistrictFovBounds(districts: DistrictInfo[]): FovBound[] {
+  return districts.map((district) => ({
+    key: district.folder,
+    centerX: district.x,
+    centerY: 0.35,
+    centerZ: district.z,
+    radius: Math.max(2.4, Math.hypot(district.width * 0.5, district.depth * 0.5) + 2.8),
+  }));
+}
+
+function isFovSetEqual(
+  prev: Set<string>,
+  next: Set<string>,
+): boolean {
+  if (prev.size !== next.size) {
+    return false;
+  }
+
+  for (const value of next) {
+    if (!prev.has(value)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function applyFovVisibilityGrace(
+  rawVisible: Set<string>,
+  bounds: FovBound[],
+  graceMap: Map<string, number>,
+  sampleStepSec: number,
+  holdSec: number,
+): Set<string> {
+  const nextVisible = new Set<string>();
+  const validKeys = new Set<string>();
+
+  for (let index = 0; index < bounds.length; index += 1) {
+    const bound = bounds[index];
+    if (!bound) {
+      continue;
+    }
+
+    const key = bound.key;
+    validKeys.add(key);
+
+    if (rawVisible.has(key)) {
+      graceMap.set(key, holdSec);
+      nextVisible.add(key);
+      continue;
+    }
+
+    const remaining = (graceMap.get(key) ?? 0) - sampleStepSec;
+    if (remaining > 0) {
+      graceMap.set(key, remaining);
+      nextVisible.add(key);
+    } else {
+      graceMap.delete(key);
+    }
+  }
+
+  for (const key of graceMap.keys()) {
+    if (!validKeys.has(key)) {
+      graceMap.delete(key);
+    }
+  }
+
+  return nextVisible;
+}
+
+function FovVisibilityProbe({
+  enabled,
+  buildingBounds,
+  roadBounds,
+  districtBounds,
+  selectedPath,
+  hoveredPath,
+  onBuildingsChange,
+  onRoadsChange,
+  onDistrictsChange,
+}: {
+  enabled: boolean;
+  buildingBounds: FovBound[];
+  roadBounds: FovBound[];
+  districtBounds: FovBound[];
+  selectedPath: string | null;
+  hoveredPath: string | null;
+  onBuildingsChange: (visiblePaths: Set<string> | null) => void;
+  onRoadsChange: (visibleRoads: Set<string> | null) => void;
+  onDistrictsChange: (visibleDistricts: Set<string> | null) => void;
+}) {
+  const { camera } = useThree();
+  const frustumRef = useRef(new Frustum());
+  const projectionRef = useRef(new Matrix4());
+  const sphereRef = useRef(new Sphere(new Vector3(), 1));
+  const elapsedRef = useRef(0);
+  const previousBuildingSetRef = useRef<Set<string>>(new Set());
+  const previousRoadSetRef = useRef<Set<string>>(new Set());
+  const previousDistrictSetRef = useRef<Set<string>>(new Set());
+  const buildingGraceRef = useRef<Map<string, number>>(new Map());
+  const roadGraceRef = useRef<Map<string, number>>(new Map());
+  const districtGraceRef = useRef<Map<string, number>>(new Map());
+  const previousEnabledRef = useRef(enabled);
+
+  useEffect(() => {
+    if (!enabled) {
+      previousBuildingSetRef.current = new Set();
+      previousRoadSetRef.current = new Set();
+      previousDistrictSetRef.current = new Set();
+      buildingGraceRef.current.clear();
+      roadGraceRef.current.clear();
+      districtGraceRef.current.clear();
+      onBuildingsChange(null);
+      onRoadsChange(null);
+      onDistrictsChange(null);
+    }
+  }, [enabled, onBuildingsChange, onDistrictsChange, onRoadsChange]);
+
+  const collectVisibleKeys = useCallback(
+    (bounds: FovBound[], nearPadding: number): Set<string> => {
+      const visible = new Set<string>();
+      for (let index = 0; index < bounds.length; index += 1) {
+        const bound = bounds[index];
+        if (!bound) {
+          continue;
+        }
+
+        sphereRef.current.center.set(bound.centerX, bound.centerY, bound.centerZ);
+        sphereRef.current.radius = bound.radius;
+
+        if (frustumRef.current.intersectsSphere(sphereRef.current)) {
+          visible.add(bound.key);
+          continue;
+        }
+
+        const distanceToCamera = camera.position.distanceTo(sphereRef.current.center);
+        if (distanceToCamera < bound.radius + nearPadding) {
+          visible.add(bound.key);
+        }
+      }
+      return visible;
+    },
+    [camera],
+  );
+
+  useFrame((_, delta) => {
+    if (!enabled) {
+      return;
+    }
+
+    elapsedRef.current += delta;
+    if (elapsedRef.current < 0.12) {
+      return;
+    }
+    const sampleStepSec = elapsedRef.current;
+    elapsedRef.current = 0;
+
+    camera.updateMatrixWorld();
+    projectionRef.current.multiplyMatrices(
+      camera.projectionMatrix,
+      camera.matrixWorldInverse,
+    );
+    frustumRef.current.setFromProjectionMatrix(projectionRef.current);
+
+    const rawVisibleBuildings = collectVisibleKeys(buildingBounds, 12);
+    const rawVisibleRoads = collectVisibleKeys(roadBounds, 16);
+    const rawVisibleDistricts = collectVisibleKeys(districtBounds, 18);
+    const nextVisibleBuildings = applyFovVisibilityGrace(
+      rawVisibleBuildings,
+      buildingBounds,
+      buildingGraceRef.current,
+      sampleStepSec,
+      FOV_BUILDING_HOLD_SEC,
+    );
+    const nextVisibleRoads = applyFovVisibilityGrace(
+      rawVisibleRoads,
+      roadBounds,
+      roadGraceRef.current,
+      sampleStepSec,
+      FOV_ROAD_HOLD_SEC,
+    );
+    const nextVisibleDistricts = applyFovVisibilityGrace(
+      rawVisibleDistricts,
+      districtBounds,
+      districtGraceRef.current,
+      sampleStepSec,
+      FOV_DISTRICT_HOLD_SEC,
+    );
+
+    if (selectedPath) {
+      nextVisibleBuildings.add(selectedPath);
+    }
+    if (hoveredPath) {
+      nextVisibleBuildings.add(hoveredPath);
+    }
+
+    const modeChanged = previousEnabledRef.current !== enabled;
+    previousEnabledRef.current = enabled;
+    if (
+      modeChanged ||
+      !isFovSetEqual(previousBuildingSetRef.current, nextVisibleBuildings)
+    ) {
+      previousBuildingSetRef.current = nextVisibleBuildings;
+      onBuildingsChange(nextVisibleBuildings);
+    }
+    if (modeChanged || !isFovSetEqual(previousRoadSetRef.current, nextVisibleRoads)) {
+      previousRoadSetRef.current = nextVisibleRoads;
+      onRoadsChange(nextVisibleRoads);
+    }
+    if (
+      modeChanged ||
+      !isFovSetEqual(previousDistrictSetRef.current, nextVisibleDistricts)
+    ) {
+      previousDistrictSetRef.current = nextVisibleDistricts;
+      onDistrictsChange(nextVisibleDistricts);
     }
   });
 
@@ -550,6 +1114,9 @@ function AdaptivePerformanceProbe({
       postFxQuality: initialQuality,
       adaptiveDpr: initialDpr,
       adaptiveLoadScale: initialLoadScale,
+      fovBuildingCoverage: 1,
+      fovRoadCoverage: 1,
+      fovDistrictCoverage: 1,
     });
   }, [
     adaptive,
@@ -595,6 +1162,9 @@ function AdaptivePerformanceProbe({
         postFxQuality: qualityRef.current,
         adaptiveDpr: dprRef.current,
         adaptiveLoadScale: loadScaleRef.current,
+        fovBuildingCoverage: 1,
+        fovRoadCoverage: 1,
+        fovDistrictCoverage: 1,
       });
       return;
     }
@@ -727,6 +1297,9 @@ function AdaptivePerformanceProbe({
       postFxQuality: effectiveQuality,
       adaptiveDpr: effectiveDpr,
       adaptiveLoadScale: effectiveLoadScale,
+      fovBuildingCoverage: 1,
+      fovRoadCoverage: 1,
+      fovDistrictCoverage: 1,
     });
 
     if (
@@ -763,6 +1336,7 @@ export const Scene3D = memo(function Scene3D({
   showPostProcessing,
   adaptivePostFx,
   modePresetIntensity,
+  coasterIntensity,
   visualPreset,
   targetFps,
   renderProfileLock,
@@ -776,6 +1350,9 @@ export const Scene3D = memo(function Scene3D({
   constructionWindowByPath,
   constructionMode,
   constructionProgress,
+  coasterProfile,
+  coasterControlInput,
+  musicSpectrum,
   onHover,
   onSelect,
   onCaptureReady,
@@ -783,9 +1360,19 @@ export const Scene3D = memo(function Scene3D({
   onPerformanceTelemetry,
   onFollowDroneChange,
   onWalkBuildingChange,
+  onCoasterTelemetry,
   onPointerSample,
 }: Scene3DProps) {
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
+  const layoutAnchorsRef = useRef<Map<string, LayoutAnchorPoint>>(new Map());
+  const coasterCameraPoseRef = useRef<CoasterCameraPose | null>(null);
+  const coasterTelemetryRef = useRef<{
+    timestamp: number;
+    telemetry: CoasterTelemetry | null;
+  }>({
+    timestamp: 0,
+    telemetry: null,
+  });
   const architectureMode = viewMode === 'architecture';
   const riskMode = viewMode === 'risk';
   const stackMode = viewMode === 'stack';
@@ -796,6 +1383,9 @@ export const Scene3D = memo(function Scene3D({
   const [adaptiveDpr, setAdaptiveDpr] = useState(1.45);
   const [adaptiveLoadScale, setAdaptiveLoadScale] = useState(1);
   const [runtimeFps, setRuntimeFps] = useState(0);
+  const [visibleBuildingPaths, setVisibleBuildingPaths] = useState<Set<string> | null>(null);
+  const [visibleRoadIds, setVisibleRoadIds] = useState<Set<string> | null>(null);
+  const [visibleDistrictFolders, setVisibleDistrictFolders] = useState<Set<string> | null>(null);
   const modePreset = useMemo(() => getSceneModePreset(viewMode), [viewMode]);
   const cinematicIntensity = Math.max(0.55, Math.min(1.8, modePresetIntensity));
   const cinematicPopulationScale = 1 + (cinematicIntensity - 1) * 0.6;
@@ -886,9 +1476,15 @@ export const Scene3D = memo(function Scene3D({
     cinematicIntensity,
   );
 
-  const sceneFiles = useMemo(() => buildCityLayout(files, dna), [files, dna]);
+  const sceneFiles = useMemo(() => {
+    const layoutFiles = buildCityLayout(files, dna);
+    return stabilizeLayoutFiles(layoutFiles, layoutAnchorsRef.current, true);
+  }, [files, dna]);
   const compareSceneFiles = useMemo(
-    () => buildCityLayout(compareFiles, dna),
+    () => {
+      const layoutFiles = buildCityLayout(compareFiles, dna);
+      return stabilizeLayoutFiles(layoutFiles, layoutAnchorsRef.current, false);
+    },
     [compareFiles, dna],
   );
 
@@ -937,8 +1533,8 @@ export const Scene3D = memo(function Scene3D({
       }
     > = {
       dawn: {
-        sky: '#d9e8ff',
-        fog: '#c7d9f0',
+        sky: '#0c2041',
+        fog: '#184167',
         ambient: 0.34,
         hemisphere: 0.5,
         directional: 0.48,
@@ -961,8 +1557,8 @@ export const Scene3D = memo(function Scene3D({
         exposure: 0.76,
       },
       sunset: {
-        sky: '#ffd6bf',
-        fog: '#efc2be',
+        sky: '#0b2044',
+        fog: '#163b66',
         ambient: 0.29,
         hemisphere: 0.43,
         directional: 0.45,
@@ -1188,8 +1784,19 @@ export const Scene3D = memo(function Scene3D({
       };
     }
 
-    const xs = sceneFiles.map((file) => file.x);
-    const zs = sceneFiles.map((file) => file.z);
+    const xs = sceneFiles
+      .map((file) => finiteNumber(file.x, Number.NaN))
+      .filter((value) => Number.isFinite(value));
+    const zs = sceneFiles
+      .map((file) => finiteNumber(file.z, Number.NaN))
+      .filter((value) => Number.isFinite(value));
+    if (xs.length === 0 || zs.length === 0) {
+      return {
+        centerX: 20,
+        centerZ: 20,
+        size: 120,
+      };
+    }
 
     const minX = Math.min(...xs) - 12;
     const maxX = Math.max(...xs) + 12;
@@ -1202,7 +1809,7 @@ export const Scene3D = memo(function Scene3D({
     return {
       centerX: (minX + maxX) / 2,
       centerZ: (minZ + maxZ) / 2,
-      size: Math.max(120, width, depth),
+      size: Math.max(120, finiteNumber(width, 120), finiteNumber(depth, 120)),
     };
   }, [sceneFiles]);
 
@@ -1253,8 +1860,11 @@ export const Scene3D = memo(function Scene3D({
 
     sceneFiles.forEach((file) => {
       const floors = compactFloors(file.commits);
-      const height = floors.reduce((sum, floor) => sum + floorHeight(floor.changes), 0);
-      map.set(file.path, Math.max(0.5, height));
+      const height = floors.reduce((sum, floor) => {
+        const floorY = floorHeight(floor.changes);
+        return sum + (Number.isFinite(floorY) ? floorY : 0.35);
+      }, 0);
+      map.set(file.path, Math.max(0.5, finiteNumber(height, 0.5)));
     });
 
     return map;
@@ -1262,13 +1872,69 @@ export const Scene3D = memo(function Scene3D({
   const buildingFootprints = useMemo<BuildingFootprint[]>(() => {
     return sceneFiles.map((file) => ({
       path: file.path,
-      x: file.x,
-      z: file.z,
-      width: file.width,
-      depth: file.depth,
-      topY: visualHeightMap.get(file.path) ?? 1.2,
+      x: finiteNumber(file.x, 0),
+      z: finiteNumber(file.z, 0),
+      width: Math.max(0.6, Math.abs(finiteNumber(file.width, 3.2))),
+      depth: Math.max(0.6, Math.abs(finiteNumber(file.depth, 3.2))),
+      topY: Math.max(0.2, finiteNumber(visualHeightMap.get(file.path) ?? Number.NaN, 1.2)),
     }));
   }, [sceneFiles, visualHeightMap]);
+  const buildingFovBounds = useMemo(
+    () => buildFovBounds(buildingFootprints),
+    [buildingFootprints],
+  );
+  const districtFovBounds = useMemo(
+    () => buildDistrictFovBounds(districtInfo),
+    [districtInfo],
+  );
+  const renderableFiles = useMemo(() => {
+    if (!visibleBuildingPaths) {
+      return sceneFiles;
+    }
+    return sceneFiles.filter((file) => visibleBuildingPaths.has(file.path));
+  }, [sceneFiles, visibleBuildingPaths]);
+  const renderableBuildingFootprints = useMemo(() => {
+    if (!visibleBuildingPaths) {
+      return buildingFootprints;
+    }
+    return buildingFootprints.filter((footprint) => visibleBuildingPaths.has(footprint.path));
+  }, [buildingFootprints, visibleBuildingPaths]);
+  const renderableDistrictInfo = useMemo(() => {
+    if (!visibleDistrictFolders) {
+      return districtInfo;
+    }
+    return districtInfo.filter((district) => visibleDistrictFolders.has(district.folder));
+  }, [districtInfo, visibleDistrictFolders]);
+  const visibleBuildingCoverage = useMemo(() => {
+    if (sceneFiles.length === 0) {
+      return 1;
+    }
+    return Math.max(0, Math.min(1, renderableFiles.length / sceneFiles.length));
+  }, [renderableFiles.length, sceneFiles.length]);
+  const visibleDistrictCoverage = useMemo(() => {
+    if (districtInfo.length === 0) {
+      return 1;
+    }
+    return Math.max(0, Math.min(1, renderableDistrictInfo.length / districtInfo.length));
+  }, [districtInfo.length, renderableDistrictInfo.length]);
+  const visibleCoverage = useMemo(() => {
+    return Math.max(0.12, visibleBuildingCoverage);
+  }, [visibleBuildingCoverage]);
+  const handleVisiblePathsChange = useCallback((paths: Set<string> | null) => {
+    setVisibleBuildingPaths(paths ? new Set(paths) : null);
+  }, []);
+  const handleVisibleRoadsChange = useCallback((ids: Set<string> | null) => {
+    setVisibleRoadIds(ids ? new Set(ids) : null);
+  }, []);
+  const handleVisibleDistrictsChange = useCallback((folders: Set<string> | null) => {
+    setVisibleDistrictFolders(folders ? new Set(folders) : null);
+  }, []);
+  useEffect(() => {
+    setVisibleBuildingPaths(null);
+  }, [sceneFiles]);
+  useEffect(() => {
+    setVisibleDistrictFolders(null);
+  }, [districtInfo]);
   const totalFloorCount = useMemo(
     () => sceneFiles.reduce((sum, file) => sum + file.commits.length, 0),
     [sceneFiles],
@@ -1333,6 +1999,52 @@ export const Scene3D = memo(function Scene3D({
         : adaptiveDpr,
     ),
   );
+  const performanceFpsFloor = Math.max(24, targetFps - 14);
+  const musicReactiveEnabled = useMemo(() => {
+    if (!musicSpectrum || !musicSpectrum.playing || !musicSpectrum.reactive) {
+      return false;
+    }
+    if (runtimeProfile === 'performance') {
+      return false;
+    }
+    if (runtimePresetScale < 0.68) {
+      return false;
+    }
+    if (postFxQuality === 'low' && runtimePresetScale < 0.78) {
+      return false;
+    }
+    if (runtimeFps > 0 && runtimeFps < performanceFpsFloor) {
+      return false;
+    }
+    return true;
+  }, [
+    musicSpectrum,
+    performanceFpsFloor,
+    postFxQuality,
+    runtimeFps,
+    runtimePresetScale,
+    runtimeProfile,
+  ]);
+  const musicPulse = useMemo(() => {
+    if (!musicReactiveEnabled || !musicSpectrum) {
+      return 0;
+    }
+
+    const bass = clamp01((musicSpectrum.bands.subBass + musicSpectrum.bands.bass) * 0.5);
+    const mids = clamp01((musicSpectrum.bands.lowMid + musicSpectrum.bands.mid) * 0.5);
+    const highs = clamp01((musicSpectrum.bands.highMid + musicSpectrum.bands.high) * 0.5);
+    const energy = clamp01(musicSpectrum.energy);
+    const beat = clamp01(musicSpectrum.beat);
+    return clamp01(
+      energy * 0.52 +
+        beat * 0.36 +
+        bass * 0.16 +
+        mids * 0.1 +
+        highs * 0.06,
+    );
+  }, [musicReactiveEnabled, musicSpectrum]);
+  const musicEventBoost = 1 + musicPulse * 0.34;
+  const musicDensityBoost = 1 + musicPulse * 0.22;
 
   const selectedPoint = useMemo<TourPoint | null>(() => {
     if (!selectedPath) {
@@ -1386,6 +2098,34 @@ export const Scene3D = memo(function Scene3D({
 
     return buildRoadSegments(sceneFiles, imports, dna, cityBounds, edgeSignals);
   }, [cityBounds, dna, imports, insights?.graph.cycleEdges, insights?.graph.forbiddenEdges, sceneFiles]);
+  const roadFovBounds = useMemo(
+    () => buildRoadFovBounds(importRoadSegments),
+    [importRoadSegments],
+  );
+  const renderableRoadSegments = useMemo(() => {
+    if (!visibleRoadIds) {
+      return importRoadSegments;
+    }
+    return importRoadSegments.filter((segment) => visibleRoadIds.has(segment.id));
+  }, [importRoadSegments, visibleRoadIds]);
+  const visibleRoadCoverage = useMemo(() => {
+    if (importRoadSegments.length === 0) {
+      return 1;
+    }
+    return Math.max(0, Math.min(1, renderableRoadSegments.length / importRoadSegments.length));
+  }, [importRoadSegments.length, renderableRoadSegments.length]);
+  const activeRoadSegments = useMemo(() => {
+    if (!visibleRoadIds) {
+      return importRoadSegments;
+    }
+    if (renderableRoadSegments.length === 0) {
+      return importRoadSegments;
+    }
+    return renderableRoadSegments;
+  }, [importRoadSegments, renderableRoadSegments, visibleRoadIds]);
+  useEffect(() => {
+    setVisibleRoadIds(null);
+  }, [importRoadSegments]);
 
   const trafficSegments = useMemo(() => {
     const baseBudget = architectureMode
@@ -1397,13 +2137,19 @@ export const Scene3D = memo(function Scene3D({
           : 320;
     const budget = Math.max(
       40,
-      Math.round(baseBudget * modePreset.trafficDensity * runtimePopulationScale),
+      Math.round(
+        baseBudget *
+          modePreset.trafficDensity *
+          runtimePopulationScale *
+          musicDensityBoost,
+      ),
     );
-    return importRoadSegments.slice(0, budget);
+    return renderableRoadSegments.slice(0, budget);
   }, [
     architectureMode,
-    importRoadSegments,
+    musicDensityBoost,
     modePreset.trafficDensity,
+    renderableRoadSegments,
     riskMode,
     runtimePopulationScale,
     stackMode,
@@ -1633,6 +2379,25 @@ export const Scene3D = memo(function Scene3D({
     tunedEventIntensityBoost,
     visualHeightMap,
   ]);
+  const musicReactiveProjectEvents = useMemo(() => {
+    if (musicPulse < 0.02) {
+      return projectEvents;
+    }
+    return projectEvents.map((event) => {
+      const perTypeBoost =
+        event.type === 'release'
+          ? 1 + musicPulse * 0.42
+          : event.type === 'flash'
+            ? 1 + musicPulse * 0.36
+            : event.type === 'accident'
+              ? 1 + musicPulse * 0.26
+              : 1 + musicPulse * 0.3;
+      return {
+        ...event,
+        intensity: clamp01(event.intensity * perTypeBoost),
+      };
+    });
+  }, [musicPulse, projectEvents]);
   const modeFlags = useMemo(
     () => ({
       showStackTowers: stackMode,
@@ -1664,16 +2429,71 @@ export const Scene3D = memo(function Scene3D({
       stackMode,
     ],
   );
-  const builderPoints = useMemo(() => {
+  const visibleBuilderPoints = useMemo(() => {
     const budget = Math.max(
       2,
-      Math.round(10 * modePreset.builderDensity * runtimePopulationScale),
+      Math.round(
+        10 *
+          modePreset.builderDensity *
+          runtimePopulationScale *
+          musicDensityBoost,
+      ),
     );
-    return tourPoints.slice(0, budget);
-  }, [modePreset.builderDensity, runtimePopulationScale, tourPoints]);
+    return renderableFiles
+      .filter((file) => hotspotPaths.has(file.path))
+      .slice(0, budget)
+      .map((file) => ({
+        x: file.x,
+        y: (visualHeightMap.get(file.path) ?? 2) * 0.38,
+        z: file.z,
+        cameraOffset: tunedTourCameraOffset,
+      }));
+  }, [
+    hotspotPaths,
+    musicDensityBoost,
+    modePreset.builderDensity,
+    renderableFiles,
+    runtimePopulationScale,
+    tunedTourCameraOffset,
+    visualHeightMap,
+  ]);
+  const renderableCompareBaselineFiles = useMemo(() => {
+    if (!visibleBuildingPaths) {
+      return compareSceneFiles;
+    }
+    return compareSceneFiles.filter((file) => visibleBuildingPaths.has(file.path));
+  }, [compareSceneFiles, visibleBuildingPaths]);
+  const renderableCompareCurrentFiles = useMemo(() => {
+    if (!visibleBuildingPaths) {
+      return sceneFiles;
+    }
+    return renderableFiles;
+  }, [renderableFiles, sceneFiles, visibleBuildingPaths]);
+  const visibleProjectEvents = useMemo(() => {
+    if (!visibleBuildingPaths) {
+      return musicReactiveProjectEvents;
+    }
+    return musicReactiveProjectEvents.filter((event) => visibleBuildingPaths.has(event.path));
+  }, [musicReactiveProjectEvents, visibleBuildingPaths]);
+  const activeBuildingFootprints = useMemo(() => {
+    if (!visibleBuildingPaths) {
+      return buildingFootprints;
+    }
+    if (renderableBuildingFootprints.length === 0) {
+      return buildingFootprints;
+    }
+    return renderableBuildingFootprints;
+  }, [buildingFootprints, renderableBuildingFootprints, visibleBuildingPaths]);
+  const coasterFootprints = useMemo(
+    () => (tourMode === 'coaster' ? buildingFootprints : activeBuildingFootprints),
+    [activeBuildingFootprints, buildingFootprints, tourMode],
+  );
+  const coasterEnabled =
+    sceneFiles.length > 0 &&
+    (tourMode === 'coaster' || activeBuildingFootprints.length > 0);
   const hotspotBillboards = useMemo(() => {
     const strongestByPath = new Map<string, ProjectCityEvent>();
-    projectEvents.forEach((event) => {
+    visibleProjectEvents.forEach((event) => {
       const existing = strongestByPath.get(event.path);
       if (!existing || existing.intensity < event.intensity) {
         strongestByPath.set(event.path, event);
@@ -1682,7 +2502,12 @@ export const Scene3D = memo(function Scene3D({
 
     const budget = Math.max(
       5,
-      Math.round(13 * modePreset.builderDensity * runtimePopulationScale),
+      Math.round(
+        13 *
+          modePreset.builderDensity *
+          runtimePopulationScale *
+          musicDensityBoost,
+      ),
     );
     return Array.from(strongestByPath.values())
       .sort((a, b) => b.intensity - a.intensity)
@@ -1696,7 +2521,7 @@ export const Scene3D = memo(function Scene3D({
         intensity: event.intensity,
         type: event.type,
       }));
-  }, [modePreset.builderDensity, projectEvents, runtimePopulationScale]);
+  }, [modePreset.builderDensity, musicDensityBoost, runtimePopulationScale, visibleProjectEvents]);
   const buildingPerformanceTier: PostFxQuality =
     postFxQuality === 'low' ||
     sceneQualityCap === 'low' ||
@@ -1729,6 +2554,70 @@ export const Scene3D = memo(function Scene3D({
     (resolvedWeather === 'rain' ||
       resolvedWeather === 'storm' ||
       modeFlags.roadWetness > 0.46);
+  const handleCoasterCameraPose = useCallback((pose: CoasterCameraPose | null) => {
+    const safePose = sanitizeCoasterPose(pose);
+    coasterCameraPoseRef.current = safePose;
+
+    if (!onCoasterTelemetry) {
+      return;
+    }
+
+    if (!safePose) {
+      if (coasterTelemetryRef.current.telemetry !== null) {
+        coasterTelemetryRef.current = {
+          timestamp: 0,
+          telemetry: null,
+        };
+        onCoasterTelemetry(null);
+      }
+      return;
+    }
+
+    const nextTelemetry: CoasterTelemetry = {
+      speed: safePose.speed,
+      acceleration: safePose.acceleration,
+      gForce: safePose.gForce,
+      lap: safePose.lap,
+      emergencyBrake: safePose.emergencyBrake,
+      slope: safePose.slope,
+      clearance: safePose.clearance,
+      throttle: safePose.throttle,
+      cameraMode: safePose.cameraMode,
+      lapTimeSec: safePose.lapTimeSec,
+      bestLapSec: safePose.bestLapSec,
+      topSpeed: safePose.topSpeed,
+    };
+    const now = Date.now();
+    const previous = coasterTelemetryRef.current.telemetry;
+    const importantChange =
+      !previous ||
+      Math.abs(previous.speed - nextTelemetry.speed) > 0.38 ||
+      Math.abs(previous.gForce - nextTelemetry.gForce) > 0.05 ||
+      Math.abs(previous.acceleration - nextTelemetry.acceleration) > 0.26 ||
+      Math.abs(previous.slope - nextTelemetry.slope) > 0.03 ||
+      Math.abs(previous.throttle - nextTelemetry.throttle) > 0.09 ||
+      Math.abs(previous.lapTimeSec - nextTelemetry.lapTimeSec) > 0.2 ||
+      Math.abs(previous.topSpeed - nextTelemetry.topSpeed) > 0.2 ||
+      previous.lap !== nextTelemetry.lap ||
+      previous.bestLapSec !== nextTelemetry.bestLapSec ||
+      previous.emergencyBrake !== nextTelemetry.emergencyBrake ||
+      previous.cameraMode !== nextTelemetry.cameraMode;
+    const timedUpdate = now - coasterTelemetryRef.current.timestamp > 180;
+
+    if (importantChange || timedUpdate) {
+      coasterTelemetryRef.current = {
+        timestamp: now,
+        telemetry: nextTelemetry,
+      };
+      onCoasterTelemetry(nextTelemetry);
+    }
+  }, [onCoasterTelemetry]);
+
+  useEffect(() => {
+    return () => {
+      onCoasterTelemetry?.(null);
+    };
+  }, [onCoasterTelemetry]);
 
   useEffect(() => {
     if (!onPerformanceTelemetry) {
@@ -1741,6 +2630,9 @@ export const Scene3D = memo(function Scene3D({
       postFxQuality,
       adaptiveDpr: adaptiveCanvasDpr,
       adaptiveLoadScale: runtimePresetScale,
+      fovBuildingCoverage: visibleBuildingCoverage,
+      fovRoadCoverage: visibleRoadCoverage,
+      fovDistrictCoverage: visibleDistrictCoverage,
     });
   }, [
     adaptiveCanvasDpr,
@@ -1749,6 +2641,9 @@ export const Scene3D = memo(function Scene3D({
     runtimePresetScale,
     runtimeFps,
     runtimeProfile,
+    visibleBuildingCoverage,
+    visibleDistrictCoverage,
+    visibleRoadCoverage,
   ]);
 
   return (
@@ -1779,6 +2674,17 @@ export const Scene3D = memo(function Scene3D({
           });
         }}
       />
+      <FovVisibilityProbe
+        enabled={sceneFiles.length > 0}
+        buildingBounds={buildingFovBounds}
+        roadBounds={roadFovBounds}
+        districtBounds={districtFovBounds}
+        selectedPath={selectedPath}
+        hoveredPath={hoveredPath}
+        onBuildingsChange={handleVisiblePathsChange}
+        onRoadsChange={handleVisibleRoadsChange}
+        onDistrictsChange={handleVisibleDistrictsChange}
+      />
 
       <SceneLightingRig
         preset={atmospherePreset}
@@ -1807,8 +2713,8 @@ export const Scene3D = memo(function Scene3D({
         seed={citySeed}
         wetness={modeFlags.roadWetness}
         showGrid={modeFlags.showDistrictGrid}
-        files={sceneFiles}
-        roadSegments={importRoadSegments}
+        files={renderableFiles}
+        roadSegments={renderableRoadSegments}
         enableWetReflections={enableWetReflections}
         reflectionQuality={postFxQuality}
         quality={buildingPerformanceTier}
@@ -1819,6 +2725,13 @@ export const Scene3D = memo(function Scene3D({
         cityBounds={cityBounds}
         accentColor={sceneAccentColor}
         seed={citySeed}
+      />
+      <CityCinematicAccentLayer
+        cityBounds={cityBounds}
+        accentColor={sceneAccentColor}
+        mode={viewMode}
+        quality={postFxQuality}
+        weather={resolvedWeather}
       />
 
       {onPointerSample && (
@@ -1841,19 +2754,34 @@ export const Scene3D = memo(function Scene3D({
       )}
 
       <DistrictOverlays
-        districts={districtInfo}
+        districts={renderableDistrictInfo}
         cityCenterX={cityBounds.centerX}
         cityCenterZ={cityBounds.centerZ}
         riskByFolder={districtRiskMap}
       />
 
       <RoadNetwork
-        segments={importRoadSegments}
+        segments={activeRoadSegments}
         trafficSegments={trafficSegments}
         accentColor={sceneAccentColor}
         trafficEnabled={modeFlags.showTraffic}
         textureSeed={citySeed}
         wetness={modeFlags.roadWetness}
+      />
+
+      <RollerCoaster
+        enabled={coasterEnabled}
+        rideActive={tourMode === 'coaster'}
+        cityBounds={cityBounds}
+        buildingFootprints={coasterFootprints}
+        seed={citySeed}
+        mode={viewMode}
+        quality={postFxQuality}
+        intensity={coasterIntensity}
+        driveProfile={coasterProfile}
+        accentColor={sceneAccentColor}
+        controlInput={coasterControlInput}
+        onCameraPoseChange={handleCoasterCameraPose}
       />
 
       {modeFlags.showInsightSignals && (
@@ -1882,15 +2810,15 @@ export const Scene3D = memo(function Scene3D({
 
       {compareEnabled && compareSceneFiles.length > 0 && (
         <ComparisonOverlay
-          baselineFiles={compareSceneFiles}
-          currentFiles={sceneFiles}
+          baselineFiles={renderableCompareBaselineFiles}
+          currentFiles={renderableCompareCurrentFiles}
           cityBounds={cityBounds}
           mode={compareMode}
           accentColor={sceneAccentColor}
         />
       )}
 
-      {sceneFiles.map((file) => (
+      {renderableFiles.map((file) => (
         <Building
           key={file.path}
           file={file}
@@ -1957,13 +2885,13 @@ export const Scene3D = memo(function Scene3D({
       />
 
       <BuilderDrones
-        points={builderPoints}
+        points={visibleBuilderPoints}
         enabled={modeFlags.showBuilders}
         speed={(dna?.droneSpeed ?? 0.9) * modePreset.droneCruiseSpeed}
         color={sceneAccentColor}
         mode={viewMode}
         cityBounds={cityBounds}
-        buildingFootprints={buildingFootprints}
+        buildingFootprints={activeBuildingFootprints}
         selectedDroneIndex={followDroneIndex}
         onSelectDrone={onFollowDroneChange}
       />
@@ -1973,32 +2901,45 @@ export const Scene3D = memo(function Scene3D({
       {modeFlags.showProjectEvents && (
         <>
           <ProjectEventSignals
-            events={projectEvents}
+            events={visibleProjectEvents}
             mode={viewMode}
-            intensityBoost={tunedEventIntensityBoost}
+            intensityBoost={tunedEventIntensityBoost * musicEventBoost}
           />
           <ProjectEventRoutes
-            events={projectEvents}
+            events={visibleProjectEvents}
             mode={viewMode}
             accentColor={sceneAccentColor}
           />
           <CityActivities
-            events={projectEvents}
+            events={visibleProjectEvents}
             mode={viewMode}
             accentColor={sceneAccentColor}
+            presetIntensity={cinematicIntensity * (1 + musicPulse * 0.16)}
+          />
+          <EventFireworks
+            events={visibleProjectEvents}
+            mode={viewMode}
+            accentColor={sceneAccentColor}
+            quality={postFxQuality}
             presetIntensity={cinematicIntensity}
+            musicPulse={musicPulse}
           />
           <GroundEventAgents
-            events={projectEvents}
+            events={visibleProjectEvents}
             cityBounds={cityBounds}
-            buildingFootprints={buildingFootprints}
+            buildingFootprints={activeBuildingFootprints}
             mode={viewMode}
             color={sceneAccentColor}
             seed={citySeed}
             serviceMultiplier={modePreset.serviceMultiplier}
             pedestrianMultiplier={modePreset.pedestrianMultiplier}
-            density={modePreset.agentDensity * runtimePopulationScale}
-            maxAgents={Math.round(modePreset.agentBudget * runtimePopulationScale)}
+            density={modePreset.agentDensity * runtimePopulationScale * visibleCoverage * musicDensityBoost}
+            maxAgents={Math.round(
+              modePreset.agentBudget *
+                runtimePopulationScale *
+                visibleCoverage *
+                musicDensityBoost,
+            )}
           />
         </>
       )}
@@ -2006,10 +2947,10 @@ export const Scene3D = memo(function Scene3D({
       <AirTraffic
         enabled={modeFlags.showAirTraffic}
         cityBounds={cityBounds}
-        buildingFootprints={buildingFootprints}
+        buildingFootprints={activeBuildingFootprints}
         color={sceneAccentColor}
         seed={citySeed}
-        density={modePreset.airTrafficDensity * runtimePopulationScale}
+        density={modePreset.airTrafficDensity * runtimePopulationScale * visibleCoverage * musicDensityBoost}
       />
 
       <OrbitControls
@@ -2031,8 +2972,8 @@ export const Scene3D = memo(function Scene3D({
         controlsRef={controlsRef}
         selectedPoint={selectedPoint}
         tourPoints={tourPoints}
-        roadSegments={importRoadSegments}
-        buildingFootprints={buildingFootprints}
+        roadSegments={activeRoadSegments}
+        buildingFootprints={activeBuildingFootprints}
         mode={viewMode}
         tourMode={tourMode}
         followDroneIndex={followDroneIndex}
@@ -2042,6 +2983,7 @@ export const Scene3D = memo(function Scene3D({
         orbitFocusLerp={tunedOrbitFocusLerp}
         orbitCameraLerp={tunedOrbitCameraLerp}
         autoTourCadenceSec={tunedAutoTourCadenceSec}
+        coasterCameraPoseRef={coasterCameraPoseRef}
         onWalkBuildingChange={onWalkBuildingChange}
       />
 

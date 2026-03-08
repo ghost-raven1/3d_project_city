@@ -2,11 +2,15 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { Text } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import {
+  CanvasTexture,
   Color,
   Group,
   InstancedMesh,
+  LinearFilter,
   MeshStandardMaterial,
   Object3D,
+  RepeatWrapping,
+  SRGBColorSpace,
 } from 'three';
 import { PositionedFileHistory } from '../types/repository';
 import { compactFloors, floorHeight } from '../utils/building';
@@ -66,6 +70,51 @@ function hashUnit(value: string): number {
   return (Math.abs(hash) % 1000) / 1000;
 }
 
+function createPanelTickerTexture(label: string, accentColor: string): CanvasTexture | null {
+  if (typeof document === 'undefined') {
+    return null;
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 64;
+  const context = canvas.getContext('2d');
+  if (!context) {
+    return new CanvasTexture(canvas);
+  }
+
+  const accent = new Color(accentColor);
+  const accentBright = `rgba(${Math.round(accent.r * 255)}, ${Math.round(accent.g * 255)}, ${Math.round(accent.b * 255)}, 0.94)`;
+  const accentSoft = `rgba(${Math.round(accent.r * 255)}, ${Math.round(accent.g * 255)}, ${Math.round(accent.b * 255)}, 0.22)`;
+
+  context.fillStyle = 'rgba(0, 8, 22, 0.82)';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = accentSoft;
+  for (let index = 0; index < 6; index += 1) {
+    const y = 4 + index * 10;
+    context.fillRect(0, y, canvas.width, 2);
+  }
+
+  context.font = '700 23px Menlo, Consolas, monospace';
+  context.textBaseline = 'middle';
+  context.fillStyle = accentBright;
+  const chunk = ` ${label} `;
+  const textWidth = Math.max(260, context.measureText(chunk).width);
+  for (let x = -textWidth; x < canvas.width + textWidth; x += textWidth + 96) {
+    context.fillText(chunk, x, canvas.height * 0.5);
+  }
+
+  const texture = new CanvasTexture(canvas);
+  texture.wrapS = RepeatWrapping;
+  texture.wrapT = RepeatWrapping;
+  texture.repeat.set(1.5, 1);
+  texture.minFilter = LinearFilter;
+  texture.magFilter = LinearFilter;
+  texture.colorSpace = SRGBColorSpace;
+  texture.needsUpdate = true;
+  return texture;
+}
+
 export const Building = memo(function Building({
   file,
   districtColor,
@@ -109,6 +158,7 @@ export const Building = memo(function Building({
   const revealProgressRef = useRef(1);
   const revealSeedPathRef = useRef<string | null>(null);
   const animationAccumulatorRef = useRef(0);
+  const panelTickerOffsetRef = useRef(hashUnit(`${file.path}-ticker-offset`));
   const tempFloorObject = useMemo(() => new Object3D(), []);
   const priorityVisual = isHovered || isSelected || isHotspot || riskScore > 0.62;
   const detailScale = useMemo(() => {
@@ -144,6 +194,8 @@ export const Building = memo(function Building({
   const showFacadeStrips = performanceTier === 'high' || priorityVisual || importance > 0.66;
   const showFacadeBands = performanceTier !== 'low' || priorityVisual;
   const showRoofModules = performanceTier !== 'low' || priorityVisual || importance > 0.7;
+  const tickerAnimationEnabled =
+    showWindowPanels && (performanceTier !== 'low' || priorityVisual || importance > 0.72);
 
   const materialPreset = useMemo(() => {
     const base =
@@ -401,6 +453,21 @@ export const Building = memo(function Building({
   }, [file.path, floorDepth, floorWidth, importance, performanceTier]);
 
   const latestCommit = file.commits[file.commits.length - 1] ?? null;
+  const panelTickerLabel = useMemo(() => {
+    const pathParts = file.path.split('/').filter(Boolean);
+    const shortPath =
+      pathParts.length > 1 ? pathParts.slice(Math.max(0, pathParts.length - 2)).join('/') : file.path;
+    const author = latestCommit?.author?.split(/\s+/)[0] ?? 'repo-city';
+    return `${shortPath.toUpperCase()} • ${author.toUpperCase()} • ${file.commits.length} COMMITS •`;
+  }, [file.commits.length, file.path, latestCommit?.author]);
+  const panelTickerTexture = useMemo(
+    () => (showWindowPanels ? createPanelTickerTexture(panelTickerLabel, accentColor) : null),
+    [accentColor, panelTickerLabel, showWindowPanels],
+  );
+  const panelTickerSpeed = useMemo(
+    () => (0.16 + hashUnit(`${file.path}-ticker-speed`) * 0.26) * (0.8 + importance * 0.6),
+    [file.path, importance],
+  );
   const hologramLabel = useMemo(() => {
     if (!latestCommit) {
       return null;
@@ -416,6 +483,16 @@ export const Building = memo(function Building({
       churn,
     };
   }, [file.commits.length, file.totalChanges, latestCommit]);
+
+  useEffect(() => {
+    if (!panelTickerTexture) {
+      return;
+    }
+    panelTickerTexture.offset.x = -panelTickerOffsetRef.current;
+    return () => {
+      panelTickerTexture.dispose();
+    };
+  }, [panelTickerTexture]);
 
   useFrame(({ clock }, delta) => {
     const previousReveal = revealProgressRef.current;
@@ -442,7 +519,8 @@ export const Building = memo(function Building({
       showRiskAura ||
       windowAnimationEnabled ||
       facadeAnimationEnabled ||
-      modeAnimationEnabled;
+      modeAnimationEnabled ||
+      tickerAnimationEnabled;
     if (revealSettled && !hasDynamicNeed) {
       return;
     }
@@ -544,6 +622,12 @@ export const Building = memo(function Building({
                 : 0.7);
         material.opacity = 0.18 + wave * 0.18;
       });
+    }
+
+    if (panelTickerTexture && tickerAnimationEnabled) {
+      panelTickerOffsetRef.current =
+        (panelTickerOffsetRef.current + delta * panelTickerSpeed) % 1;
+      panelTickerTexture.offset.x = -panelTickerOffsetRef.current;
     }
   });
 
@@ -712,6 +796,7 @@ export const Building = memo(function Building({
             }}
             color={accentColor}
             emissive={accentColor}
+            emissiveMap={panelTickerTexture ?? undefined}
             emissiveIntensity={0.45 + importance * 0.6}
             transparent
             opacity={0.36}

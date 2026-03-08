@@ -1,10 +1,16 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Box } from '@mui/material';
+import { Box, Chip, Paper, Stack, Typography } from '@mui/material';
 import { AppOverlayLayer } from './components/AppOverlayLayer';
 import { ProductEmptyState } from './components/ProductEmptyState';
 import { ProgressBar } from './components/ProgressBar';
 import { TopControlPanel } from './components/TopControlPanel';
-import { ConstructionWindow, ScenePerformanceTelemetry } from './components/scene/types';
+import {
+  CoasterControlInput,
+  CoasterTelemetry,
+  ConstructionWindow,
+  MusicSpectrumTelemetry,
+  ScenePerformanceTelemetry,
+} from './components/scene/types';
 import { useCollaboration } from './hooks/useCollaboration';
 import { useNarrator } from './hooks/useNarrator';
 import { useScenePreferences } from './hooks/useScenePreferences';
@@ -34,6 +40,9 @@ const DEFAULT_SCENE_PERFORMANCE: ScenePerformanceTelemetry = {
   postFxQuality: 'high',
   adaptiveDpr: 1.45,
   adaptiveLoadScale: 1,
+  fovBuildingCoverage: 1,
+  fovRoadCoverage: 1,
+  fovDistrictCoverage: 1,
 };
 
 function topDistrict(folder: string): string {
@@ -150,6 +159,14 @@ function App() {
   const [scenePerformance, setScenePerformance] = useState<ScenePerformanceTelemetry>(
     DEFAULT_SCENE_PERFORMANCE,
   );
+  const [coasterTelemetry, setCoasterTelemetry] = useState<CoasterTelemetry | null>(null);
+  const [musicSpectrum, setMusicSpectrum] = useState<MusicSpectrumTelemetry | null>(null);
+  const [coasterControlInput, setCoasterControlInput] = useState<CoasterControlInput>({
+    manualThrottle: null,
+    cameraToggleSeq: 0,
+    resetSeq: 0,
+    regenerateSeq: 0,
+  });
   const [languageFilter, setLanguageFilter] = useState('all');
   const [authorFilter, setAuthorFilter] = useState('all');
   const [districtFilter, setDistrictFilter] = useState('all');
@@ -211,6 +228,8 @@ function App() {
     dynamicAtmosphere,
     constructionMode,
     constructionSpeed,
+    coasterIntensity,
+    coasterProfile,
     tourMode,
     followDroneIndex,
     walkBuildingPath,
@@ -239,6 +258,8 @@ function App() {
     setDynamicAtmosphere,
     setConstructionMode,
     setConstructionSpeed,
+    setCoasterIntensity,
+    setCoasterProfile,
     setTourMode,
     setFollowDroneIndex,
     setWalkBuildingPath,
@@ -256,6 +277,50 @@ function App() {
     error: narratorError,
     sendNarratorAction,
   } = useNarrator();
+
+  const handleCoasterThrottleChange = useCallback((throttle: number | null) => {
+    const clamped = throttle === null ? null : Math.max(-1, Math.min(1, throttle));
+    setCoasterControlInput((current) => {
+      if (current.manualThrottle === clamped) {
+        return current;
+      }
+      return {
+        ...current,
+        manualThrottle: clamped,
+      };
+    });
+  }, []);
+
+  const handleCoasterCameraToggle = useCallback(() => {
+    setCoasterControlInput((current) => ({
+      ...current,
+      cameraToggleSeq: current.cameraToggleSeq + 1,
+    }));
+  }, []);
+
+  const handleCoasterReset = useCallback(() => {
+    setCoasterControlInput((current) => ({
+      ...current,
+      resetSeq: current.resetSeq + 1,
+    }));
+  }, []);
+
+  const handleCoasterRegenerate = useCallback(() => {
+    setCoasterControlInput((current) => ({
+      ...current,
+      regenerateSeq: current.regenerateSeq + 1,
+    }));
+  }, []);
+
+  useEffect(() => {
+    if (tourMode !== 'coaster') {
+      setCoasterTelemetry(null);
+      setCoasterControlInput((current) => ({
+        ...current,
+        manualThrottle: null,
+      }));
+    }
+  }, [tourMode]);
 
   useEffect(() => {
     if (autoParsedRef.current) {
@@ -292,10 +357,35 @@ function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() !== 'h') {
+      if (isTypingTarget(event.target)) {
         return;
       }
-      if (isTypingTarget(event.target)) {
+
+      const key = event.key.toLowerCase();
+      if (
+        tourMode === 'coaster' &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey
+      ) {
+        if (key === '1') {
+          event.preventDefault();
+          setCoasterProfile('comfort');
+          return;
+        }
+        if (key === '2') {
+          event.preventDefault();
+          setCoasterProfile('sport');
+          return;
+        }
+        if (key === '3') {
+          event.preventDefault();
+          setCoasterProfile('extreme');
+          return;
+        }
+      }
+
+      if (key !== 'h') {
         return;
       }
 
@@ -304,13 +394,12 @@ function App() {
         setUiMode((current) => nextUiMode(current as UiMode));
         return;
       }
-
       setUiMode((current) => (current === 'focus' ? 'full' : 'focus'));
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [setUiMode]);
+  }, [setCoasterProfile, setUiMode, tourMode]);
 
   const cityDna = useMemo(() => createCityDNA(data), [data]);
   const {
@@ -1368,24 +1457,39 @@ function App() {
           <Suspense
             fallback={
               <Box sx={{ p: { xs: 1.2, md: 2 }, height: '100%' }}>
-                <Box
+                <Paper
                   sx={{
-                    p: { xs: 1.2, md: 2 },
+                    p: { xs: 1.3, md: 2.1 },
                     height: '100%',
                     display: 'grid',
                     placeItems: 'center',
                     background:
                       'radial-gradient(circle at 14% 18%, rgba(96,223,255,0.12), transparent 38%), radial-gradient(circle at 83% 26%, rgba(105,134,255,0.16), transparent 34%), linear-gradient(160deg, rgba(8,18,40,0.55), rgba(8,18,40,0.24))',
                     borderRadius: 3,
+                    border: '1px solid rgba(117,222,255,0.38)',
                   }}
                 >
-                  <ProgressBar
-                    title="Bootstrapping City Engine"
-                    subtitle="Streaming meshes, lighting and simulation layers"
-                    message="Compiling scene modules and calibrating cinematic pipeline..."
-                    sx={{ width: 'min(560px, 92vw)' }}
-                  />
-                </Box>
+                  <Stack spacing={1.2} sx={{ width: 'min(620px, 94vw)' }}>
+                    <ProgressBar
+                      title="Bootstrapping City Engine"
+                      subtitle="Streaming meshes, lighting and simulation layers"
+                      message="Compiling scene modules and calibrating cinematic pipeline..."
+                      sx={{ width: '100%' }}
+                    />
+                    <Stack direction="row" spacing={0.7} useFlexGap flexWrap="wrap">
+                      <Chip size="small" label="Scene graph" variant="outlined" />
+                      <Chip size="small" label="Atmosphere rig" variant="outlined" />
+                      <Chip size="small" label="Telemetry channel" variant="outlined" />
+                      <Chip size="small" label="Narrator context" variant="outlined" />
+                    </Stack>
+                    <Typography
+                      variant="caption"
+                      sx={{ color: 'rgba(183, 224, 244, 0.9)', letterSpacing: '0.04em' }}
+                    >
+                      Preparing production shell: render profile, HUD overlays and interaction layers.
+                    </Typography>
+                  </Stack>
+                </Paper>
               </Box>
             }
           >
@@ -1410,6 +1514,7 @@ function App() {
               showPostProcessing={showPostProcessing}
               adaptivePostFx={adaptivePostFx}
               modePresetIntensity={modePresetIntensity}
+              coasterIntensity={coasterIntensity}
               visualPreset={visualPreset}
               targetFps={targetFps}
               renderProfileLock={renderProfileLock}
@@ -1423,6 +1528,9 @@ function App() {
               constructionWindowByPath={constructionWindowByPath}
               constructionMode={constructionMode}
               constructionProgress={constructionProgress}
+              coasterProfile={coasterProfile}
+              coasterControlInput={coasterControlInput}
+              musicSpectrum={musicSpectrum}
               onHover={setHoveredPath}
               onSelect={setSelectedPath}
               onCaptureReady={(capture) => {
@@ -1432,6 +1540,7 @@ function App() {
               onPerformanceTelemetry={setScenePerformance}
               onFollowDroneChange={setFollowDroneIndex}
               onWalkBuildingChange={setWalkBuildingPath}
+              onCoasterTelemetry={setCoasterTelemetry}
               onPointerSample={handlePointerSample}
             />
           </Suspense>
@@ -1479,6 +1588,8 @@ function App() {
           uiMode={uiMode}
           cityDna={cityDna}
           tourMode={tourMode}
+          coasterProfile={coasterProfile}
+          coasterTelemetry={coasterTelemetry}
           walkBuildingPath={walkBuildingPath}
           liveWatch={liveWatch}
           roomId={roomId}
@@ -1579,6 +1690,12 @@ function App() {
             });
           }}
           onClearRoomError={clearRoomError}
+          onCoasterThrottleChange={handleCoasterThrottleChange}
+          onCoasterProfileChange={setCoasterProfile}
+          onCoasterCameraToggle={handleCoasterCameraToggle}
+          onCoasterReset={handleCoasterReset}
+          onCoasterRegenerate={handleCoasterRegenerate}
+          onMusicSpectrumChange={setMusicSpectrum}
         />
       </Box>
 
@@ -1628,6 +1745,8 @@ function App() {
         showPostProcessing={showPostProcessing}
         adaptivePostFx={adaptivePostFx}
         modePresetIntensity={modePresetIntensity}
+        coasterIntensity={coasterIntensity}
+        coasterProfile={coasterProfile}
         visualPreset={visualPreset}
         targetFps={targetFps}
         renderProfileLock={renderProfileLock}
@@ -1676,6 +1795,8 @@ function App() {
         onShowPostProcessingChange={setShowPostProcessing}
         onAdaptivePostFxChange={setAdaptivePostFx}
         onModePresetIntensityChange={setModePresetIntensity}
+        onCoasterIntensityChange={setCoasterIntensity}
+        onCoasterProfileChange={setCoasterProfile}
         onVisualPresetChange={setVisualPreset}
         onTargetFpsChange={setTargetFps}
         onRenderProfileLockChange={setRenderProfileLock}

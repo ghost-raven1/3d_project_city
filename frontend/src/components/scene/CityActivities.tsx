@@ -28,11 +28,14 @@ interface ActivityNode {
   color: string;
   title: string;
   subtitle: string;
+  seed: number;
 }
 
 interface ActivityOrbiter {
   id: string;
-  activityIndex: number;
+  centerX: number;
+  centerY: number;
+  centerZ: number;
   radius: number;
   speed: number;
   phase: number;
@@ -56,6 +59,15 @@ const subtitlesByType: Record<ProjectCityEvent['type'], string[]> = {
 
 function pick<T>(items: T[], index: number): T {
   return items[((index % items.length) + items.length) % items.length] as T;
+}
+
+function hashToUnit(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return ((hash >>> 0) % 1000000) / 1000000;
 }
 
 function blendHex(colorA: string, colorB: string, factor: number): string {
@@ -131,12 +143,10 @@ export const CityActivities = memo(function CityActivities({
       6,
       Math.round((mode === 'stack' ? 8 : 14) * (0.72 + tunedPreset * 0.34)),
     );
-    const sorted = [...events]
-      .sort((a, b) => b.intensity - a.intensity)
-      .slice(0, limit);
+    const scopedEvents = events.slice(0, limit);
 
     const result: ActivityNode[] = [];
-    sorted.forEach((event, index) => {
+    scopedEvents.forEach((event) => {
       const extraCopies =
         event.type === 'flash' || event.type === 'release'
           ? mode === 'risk'
@@ -144,10 +154,12 @@ export const CityActivities = memo(function CityActivities({
             : 1
           : 0;
       const copies = 1 + extraCopies;
+      const eventSeed = hashToUnit(event.id);
 
       for (let copy = 0; copy < copies; copy += 1) {
-        const angle = ((index + 1) * 1.19 + copy * 2.11) % (Math.PI * 2);
-        const offset = 0.45 + copy * 0.36 + (index % 3) * 0.08;
+        const copySeed = hashToUnit(`${event.id}:activity:${copy}`);
+        const angle = copySeed * Math.PI * 2;
+        const offset = 0.42 + copy * 0.34 + eventSeed * 0.14;
         result.push({
           id: `${event.id}-activity-${copy}`,
           eventType: event.type,
@@ -156,8 +168,9 @@ export const CityActivities = memo(function CityActivities({
           z: event.z + Math.sin(angle) * offset,
           intensity: Math.max(0.2, Math.min(1, event.intensity * (0.86 + copy * 0.08))),
           color: blendHex(baseColor(event.type), accentColor, 0.38),
-          title: pick(titlesByType[event.type], index + copy),
-          subtitle: pick(subtitlesByType[event.type], index + copy),
+          title: pick(titlesByType[event.type], Math.floor(copySeed * 17)),
+          subtitle: pick(subtitlesByType[event.type], Math.floor((copySeed + eventSeed) * 23)),
+          seed: copySeed,
         });
       }
     });
@@ -166,17 +179,22 @@ export const CityActivities = memo(function CityActivities({
   }, [accentColor, events, mode, tunedPreset]);
 
   const orbiters = useMemo<ActivityOrbiter[]>(() => {
-    return activities.flatMap((activity, activityIndex) => {
+    return activities.flatMap((activity) => {
       const count = activity.eventType === 'release' || activity.eventType === 'flash' ? 4 : 3;
-      return Array.from({ length: count }, (_, orbiterIndex) => ({
-        id: `${activity.id}-orbiter-${orbiterIndex}`,
-        activityIndex,
-        radius: 0.23 + orbiterIndex * 0.09 + activity.intensity * 0.14,
-        speed: 0.74 + orbiterIndex * 0.22 + activity.intensity * 0.35,
-        phase: (activityIndex + 1) * (orbiterIndex + 1) * 0.63,
-        height: 0.08 + orbiterIndex * 0.02,
-        color: blendHex(activity.color, '#eef7ff', 0.24),
-      }));
+      return Array.from({ length: count }, (_, orbiterIndex) => {
+        const orbiterSeed = hashToUnit(`${activity.id}:orbiter:${orbiterIndex}`);
+        return {
+          id: `${activity.id}-orbiter-${orbiterIndex}`,
+          centerX: activity.x,
+          centerY: activity.y,
+          centerZ: activity.z,
+          radius: 0.23 + orbiterIndex * 0.09 + activity.intensity * 0.14,
+          speed: 0.74 + orbiterIndex * 0.22 + activity.intensity * 0.35 + orbiterSeed * 0.14,
+          phase: orbiterSeed * Math.PI * 2,
+          height: 0.08 + orbiterIndex * 0.02,
+          color: blendHex(activity.color, '#eef7ff', 0.24),
+        };
+      });
     });
   }, [activities]);
 
@@ -193,10 +211,10 @@ export const CityActivities = memo(function CityActivities({
       }
 
       const bob = Math.sin(
-        time * (SCENE_MOTION.activityBobBaseHz + activity.intensity * 1.1) + index * 0.71,
+        time * (SCENE_MOTION.activityBobBaseHz + activity.intensity * 1.1) + activity.seed * 10,
       );
       node.position.y = activity.y + 0.02 + bob * 0.03;
-      node.rotation.y = Math.sin(time * 0.45 + index) * 0.28;
+      node.rotation.y = Math.sin(time * 0.45 + activity.seed * 12) * 0.28;
     });
 
     ringMaterialsRef.current.forEach((material, index) => {
@@ -210,7 +228,8 @@ export const CityActivities = memo(function CityActivities({
         Math.max(
           0,
           Math.sin(
-            time * (SCENE_MOTION.activityRingPulseBaseHz + activity.intensity * 1.8) + index * 0.6,
+            time * (SCENE_MOTION.activityRingPulseBaseHz + activity.intensity * 1.8) +
+              activity.seed * 9,
           ),
         ) * 1.05;
       material.emissiveIntensity =
@@ -226,7 +245,8 @@ export const CityActivities = memo(function CityActivities({
 
       const wave =
         0.6 +
-        Math.max(0, Math.sin(time * SCENE_MOTION.activityCorePulseBaseHz + index * 0.75)) * 0.7;
+        Math.max(0, Math.sin(time * SCENE_MOTION.activityCorePulseBaseHz + activity.seed * 11)) *
+          0.7;
       material.emissiveIntensity =
         wave * visualModeBoost * (0.95 + activity.intensity * 0.65) * (0.84 + tunedPreset * 0.18);
     });
@@ -237,16 +257,11 @@ export const CityActivities = memo(function CityActivities({
         return;
       }
 
-      const activity = activities[orbiter.activityIndex];
-      if (!activity) {
-        return;
-      }
-
       const angle = time * orbiter.speed * velocityBoost + orbiter.phase;
       node.position.set(
-        activity.x + Math.cos(angle) * orbiter.radius,
-        activity.y + orbiter.height + Math.sin(angle * 2.2) * 0.02,
-        activity.z + Math.sin(angle) * orbiter.radius,
+        orbiter.centerX + Math.cos(angle) * orbiter.radius,
+        orbiter.centerY + orbiter.height + Math.sin(angle * 2.2) * 0.02,
+        orbiter.centerZ + Math.sin(angle) * orbiter.radius,
       );
     });
 

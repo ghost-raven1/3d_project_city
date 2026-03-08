@@ -301,6 +301,12 @@ export class RepoGateway {
     1000,
     300_000,
   );
+  private static readonly NARRATOR_FALLBACK_TIMEOUT_MS = envPositiveInt(
+    'NARRATOR_FALLBACK_TIMEOUT_MS',
+    5500,
+    500,
+    120_000,
+  );
   private static readonly NARRATOR_DISCOVERY_TIMEOUT_MS = envPositiveInt(
     'NARRATOR_DISCOVERY_TIMEOUT_MS',
     6500,
@@ -2014,7 +2020,29 @@ export class RepoGateway {
 
     try {
       const prompt = this.buildNarratorPrompt(action, uiActions);
-      const generated = await this.requestNarration(prompt);
+      let generated: string | null;
+      if (RepoGateway.NARRATOR_REQUIRE_LLM) {
+        generated = await this.requestNarration(prompt);
+      } else {
+        const llmAttempt = this.requestNarration(prompt).catch(() => null);
+        let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+        let fallbackTimedOut = false;
+        const fallbackDeadline = new Promise<null>((resolve) => {
+          fallbackTimer = setTimeout(() => {
+            fallbackTimedOut = true;
+            resolve(null);
+          }, RepoGateway.NARRATOR_FALLBACK_TIMEOUT_MS);
+        });
+        generated = await Promise.race([llmAttempt, fallbackDeadline]);
+        if (fallbackTimer !== null) {
+          clearTimeout(fallbackTimer);
+        }
+        if (!generated && fallbackTimedOut) {
+          this.logger.debug(
+            `Narrator fallback mode activated after ${RepoGateway.NARRATOR_FALLBACK_TIMEOUT_MS}ms for socket ${client.id}.`,
+          );
+        }
+      }
       if (!generated && RepoGateway.NARRATOR_REQUIRE_LLM) {
         throw new Error('Narrator LLM returned empty response.');
       }

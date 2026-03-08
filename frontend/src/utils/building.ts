@@ -2,8 +2,13 @@ import { CommitFloor } from '../types/repository';
 
 const MAX_VISIBLE_FLOORS = 60;
 
+function finiteNumber(value: number, fallback = 0): number {
+  return Number.isFinite(value) ? value : fallback;
+}
+
 export function floorHeight(changes: number): number {
-  return Math.max(0.35, Math.log1p(changes) * 0.42);
+  const normalizedChanges = Math.max(0, finiteNumber(changes, 0));
+  return Math.max(0.35, Math.log1p(normalizedChanges) * 0.42);
 }
 
 export function compactFloors(
@@ -26,9 +31,9 @@ export function compactFloors(
       author: first.author,
       date: first.date,
       message: first.message,
-      additions: chunk.reduce((sum, floor) => sum + floor.additions, 0),
-      deletions: chunk.reduce((sum, floor) => sum + floor.deletions, 0),
-      changes: chunk.reduce((sum, floor) => sum + floor.changes, 0),
+      additions: chunk.reduce((sum, floor) => sum + finiteNumber(floor.additions, 0), 0),
+      deletions: chunk.reduce((sum, floor) => sum + finiteNumber(floor.deletions, 0), 0),
+      changes: chunk.reduce((sum, floor) => sum + finiteNumber(floor.changes, 0), 0),
       branches: Array.from(
         new Set(chunk.flatMap((floor) => floor.branches ?? [])),
       ),

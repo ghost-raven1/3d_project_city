@@ -15,24 +15,24 @@ const panelAppear = keyframes`
 export const panelSurfaceSx = {
   backdropFilter: 'blur(15px) saturate(155%)',
   background:
-    'linear-gradient(166deg, rgba(5,18,35,0.86) 0%, rgba(6,22,44,0.82) 55%, rgba(4,14,29,0.9) 100%), repeating-linear-gradient(180deg, rgba(125,220,255,0.03) 0px, rgba(125,220,255,0.03) 1px, transparent 1px, transparent 8px)',
-  border: `1px solid ${alpha('#77d9ff', 0.34)}`,
-  boxShadow: `0 18px 44px ${alpha('#030d20', 0.52)}, inset 0 1px 0 ${alpha('#b5f2ff', 0.14)}`,
-  borderRadius: 2.2,
+    'linear-gradient(166deg, rgba(3,14,30,0.9) 0%, rgba(5,20,42,0.86) 58%, rgba(3,12,26,0.92) 100%), repeating-linear-gradient(180deg, rgba(122,231,255,0.045) 0px, rgba(122,231,255,0.045) 1px, transparent 1px, transparent 7px)',
+  border: `1px solid ${alpha('#6feaff', 0.42)}`,
+  boxShadow: `0 18px 44px ${alpha('#020914', 0.62)}, inset 0 1px 0 ${alpha('#b5f2ff', 0.2)}, inset 0 0 0 1px ${alpha('#48b7ff', 0.14)}`,
+  borderRadius: 1.4,
   animation: `${panelAppear} ${UI_MOTION.panelEnterMs}ms ${UI_MOTION.easeStandard}`,
   transition: `box-shadow ${UI_MOTION.hoverMs}ms ease, border-color ${UI_MOTION.hoverMs}ms ease, transform ${UI_MOTION.hoverMs}ms ease`,
   '&:hover': {
-    borderColor: alpha('#8fe8ff', 0.5),
-    boxShadow: `0 20px 52px ${alpha('#041326', 0.58)}, inset 0 1px 0 ${alpha('#d0f7ff', 0.22)}`,
+    borderColor: alpha('#9bf2ff', 0.66),
+    boxShadow: `0 20px 52px ${alpha('#041326', 0.62)}, inset 0 1px 0 ${alpha('#d0f7ff', 0.3)}, inset 0 0 0 1px ${alpha('#57c0ff', 0.2)}`,
     transform: 'translateY(-1px)',
   },
 };
 
 export const panelSectionSx = {
-  borderRadius: 1.7,
-  border: `1px solid ${alpha('#77d6ff', 0.32)}`,
+  borderRadius: 1.2,
+  border: `1px solid ${alpha('#6de8ff', 0.36)}`,
   background:
-    'linear-gradient(165deg, rgba(7,22,42,0.72) 0%, rgba(8,27,51,0.68) 100%)',
+    'linear-gradient(165deg, rgba(6,19,38,0.8) 0%, rgba(8,25,49,0.74) 100%)',
 };
 
 export const panelScrollSx = {
@@ -57,9 +57,9 @@ export const panelScrollSx = {
 };
 
 export const panelTitleSx = {
-  letterSpacing: '0.06em',
+  letterSpacing: '0.08em',
   textTransform: 'uppercase',
-  color: '#b4f2ff',
+  color: '#c9f8ff',
 };
 
 export const panelMetaTextSx = {
@@ -68,9 +68,9 @@ export const panelMetaTextSx = {
 };
 
 export const panelInsetSx = {
-  borderRadius: 1,
-  border: `1px solid ${alpha('#82ddff', 0.22)}`,
-  backgroundColor: alpha('#0a2744', 0.42),
+  borderRadius: 0.85,
+  border: `1px solid ${alpha('#82ddff', 0.3)}`,
+  backgroundColor: alpha('#082442', 0.52),
 };
 
 export const panelChipSx = {
@@ -86,11 +86,11 @@ export const panelChipSx = {
 };
 
 export const panelActionButtonSx = {
-  borderColor: alpha('#7fdfff', 0.4),
-  backgroundColor: alpha('#0a2a4b', 0.6),
+  borderColor: alpha('#7fdfff', 0.52),
+  backgroundColor: alpha('#0b2c4f', 0.68),
   '&:hover': {
-    borderColor: alpha('#a7eeff', 0.82),
-    backgroundColor: alpha('#123a62', 0.76),
+    borderColor: alpha('#b5f4ff', 0.9),
+    backgroundColor: alpha('#13406d', 0.86),
   },
 };
 

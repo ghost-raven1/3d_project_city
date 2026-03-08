@@ -5,6 +5,7 @@ import TimelineRoundedIcon from '@mui/icons-material/TimelineRounded';
 import {
   Box,
   Button,
+  Chip,
   Paper,
   Stack,
   Typography,
@@ -25,6 +26,14 @@ const SAMPLE_REPOS = [
   'https://github.com/facebook/react',
   'https://github.com/vercel/next.js',
   'https://github.com/nestjs/nest',
+];
+
+const QUICK_SIGNAL_CHIPS = [
+  'Realtime telemetry',
+  'Narrated insights',
+  'Architecture mapping',
+  'Risk hotspots',
+  'Shareable reports',
 ];
 
 export function ProductEmptyState({ onParseRepo }: ProductEmptyStateProps) {
@@ -156,6 +165,25 @@ export function ProductEmptyState({ onParseRepo }: ProductEmptyStateProps) {
             </Stack>
           </Stack>
 
+          <Stack direction="row" spacing={0.7} flexWrap="wrap">
+            {QUICK_SIGNAL_CHIPS.map((chip) => (
+              <Chip
+                key={chip}
+                size="small"
+                label={chip}
+                variant="outlined"
+                sx={{
+                  borderColor: alpha('#87ddff', 0.5),
+                  color: '#d5edff',
+                  backgroundColor: alpha('#08203d', 0.42),
+                  '& .MuiChip-label': {
+                    letterSpacing: '0.03em',
+                  },
+                }}
+              />
+            ))}
+          </Stack>
+
           <Stack
             direction={{ xs: 'column', md: 'row' }}
             spacing={1}
@@ -181,11 +209,11 @@ export function ProductEmptyState({ onParseRepo }: ProductEmptyStateProps) {
               <Paper
                 key={card.title}
                 variant="outlined"
-              sx={{
-                ...panelCardHoverSx,
-                ...panelInsetSx,
-                flex: 1,
-                p: 1.25,
+                sx={{
+                  ...panelCardHoverSx,
+                  ...panelInsetSx,
+                  flex: 1,
+                  p: 1.25,
                   borderRadius: 2,
                   borderColor: alpha('#8bd7ff', 0.42),
                   backgroundColor: alpha('#061429', 0.4),
