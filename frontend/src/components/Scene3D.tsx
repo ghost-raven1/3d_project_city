@@ -1693,6 +1693,9 @@ export const Scene3D = memo(function Scene3D({
         maxX: number;
         minZ: number;
         maxZ: number;
+        sumX: number;
+        sumZ: number;
+        count: number;
       }
     >();
 
@@ -1704,7 +1707,15 @@ export const Scene3D = memo(function Scene3D({
       const maxZ = file.z + file.depth / 2 + 1;
 
       if (!existing) {
-        map.set(file.folder, { minX, maxX, minZ, maxZ });
+        map.set(file.folder, {
+          minX,
+          maxX,
+          minZ,
+          maxZ,
+          sumX: file.x,
+          sumZ: file.z,
+          count: 1,
+        });
         return;
       }
 
@@ -1712,15 +1723,89 @@ export const Scene3D = memo(function Scene3D({
       existing.maxX = Math.max(existing.maxX, maxX);
       existing.minZ = Math.min(existing.minZ, minZ);
       existing.maxZ = Math.max(existing.maxZ, maxZ);
+      existing.sumX += file.x;
+      existing.sumZ += file.z;
+      existing.count += 1;
     });
 
     const hueOffset = dna ? dna.seed % 360 : 0;
+    const baseDistricts = Array.from(map.entries())
+      .sort(([leftFolder], [rightFolder]) => leftFolder.localeCompare(rightFolder))
+      .map(([folder, bounds]) => {
+        const fallbackX = (bounds.minX + bounds.maxX) / 2;
+        const fallbackZ = (bounds.minZ + bounds.maxZ) / 2;
+        const centroidX =
+          bounds.count > 0 ? bounds.sumX / bounds.count : fallbackX;
+        const centroidZ =
+          bounds.count > 0 ? bounds.sumZ / bounds.count : fallbackZ;
+        return {
+          folder,
+          x: Number.isFinite(centroidX) ? centroidX : fallbackX,
+          z: Number.isFinite(centroidZ) ? centroidZ : fallbackZ,
+          targetX: Number.isFinite(centroidX) ? centroidX : fallbackX,
+          targetZ: Number.isFinite(centroidZ) ? centroidZ : fallbackZ,
+          width: Math.max(6.5, bounds.maxX - bounds.minX),
+          depth: Math.max(6.5, bounds.maxZ - bounds.minZ),
+        };
+      });
 
-    return Array.from(map.entries()).map(([folder, bounds], index) => {
-      const x = (bounds.minX + bounds.maxX) / 2;
-      const z = (bounds.minZ + bounds.maxZ) / 2;
-      const width = bounds.maxX - bounds.minX;
-      const depth = bounds.maxZ - bounds.minZ;
+    const resolvedDistricts = baseDistricts.map((district) => ({ ...district }));
+    const overlapPadding = 1.35;
+    const maxIterations = 26;
+
+    for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+      let touched = false;
+
+      for (let leftIndex = 0; leftIndex < resolvedDistricts.length; leftIndex += 1) {
+        const left = resolvedDistricts[leftIndex];
+        if (!left) {
+          continue;
+        }
+
+        for (let rightIndex = leftIndex + 1; rightIndex < resolvedDistricts.length; rightIndex += 1) {
+          const right = resolvedDistricts[rightIndex];
+          if (!right) {
+            continue;
+          }
+
+          const dx = right.x - left.x;
+          const dz = right.z - left.z;
+          const minDx = (left.width + right.width) * 0.5 + overlapPadding;
+          const minDz = (left.depth + right.depth) * 0.5 + overlapPadding;
+          const overlapX = minDx - Math.abs(dx);
+          const overlapZ = minDz - Math.abs(dz);
+
+          if (overlapX <= 0 || overlapZ <= 0) {
+            continue;
+          }
+
+          touched = true;
+          if (overlapX < overlapZ) {
+            const direction = dx === 0 ? (leftIndex % 2 === 0 ? 1 : -1) : Math.sign(dx);
+            const shift = overlapX * 0.52;
+            left.x -= direction * shift * 0.5;
+            right.x += direction * shift * 0.5;
+          } else {
+            const direction = dz === 0 ? (rightIndex % 2 === 0 ? 1 : -1) : Math.sign(dz);
+            const shift = overlapZ * 0.52;
+            left.z -= direction * shift * 0.5;
+            right.z += direction * shift * 0.5;
+          }
+        }
+      }
+
+      resolvedDistricts.forEach((district) => {
+        district.x += (district.targetX - district.x) * 0.08;
+        district.z += (district.targetZ - district.z) * 0.08;
+      });
+
+      if (!touched) {
+        break;
+      }
+    }
+
+    return resolvedDistricts.map((district, index) => {
+      const { folder, x, z, width, depth } = district;
       const archetype = detectDistrictArchetype(folder);
       const archetypeVisual = getArchetypeVisual(archetype);
       const angle = ((dna?.seed ?? 42) % 360) * (Math.PI / 180) + index * 0.37;
@@ -1917,9 +2002,6 @@ export const Scene3D = memo(function Scene3D({
     }
     return Math.max(0, Math.min(1, renderableDistrictInfo.length / districtInfo.length));
   }, [districtInfo.length, renderableDistrictInfo.length]);
-  const visibleCoverage = useMemo(() => {
-    return Math.max(0.12, visibleBuildingCoverage);
-  }, [visibleBuildingCoverage]);
   const handleVisiblePathsChange = useCallback((paths: Set<string> | null) => {
     setVisibleBuildingPaths(paths ? new Set(paths) : null);
   }, []);
@@ -1990,6 +2072,62 @@ export const Scene3D = memo(function Scene3D({
     runtimeDensityScale *
     runtimePresetScale *
     (heavySceneComplexity ? 0.72 : 1);
+  const maxVisibleBuildings = useMemo(() => {
+    if (runtimeProfile === 'performance') {
+      return heavySceneComplexity ? 180 : 240;
+    }
+    if (runtimeProfile === 'balanced') {
+      return heavySceneComplexity ? 260 : 340;
+    }
+    return heavySceneComplexity ? 320 : 520;
+  }, [heavySceneComplexity, runtimeProfile]);
+  const displayedFiles = useMemo<PositionedFileHistory[]>(() => {
+    if (renderableFiles.length <= maxVisibleBuildings) {
+      return renderableFiles;
+    }
+
+    const pinnedPaths = new Set<string>();
+    if (selectedPath) {
+      pinnedPaths.add(selectedPath);
+    }
+    if (hoveredPath) {
+      pinnedPaths.add(hoveredPath);
+    }
+
+    const pinned: PositionedFileHistory[] = [];
+    const scored: Array<{ file: PositionedFileHistory; score: number }> = [];
+
+    renderableFiles.forEach((file) => {
+      if (pinnedPaths.has(file.path)) {
+        pinned.push(file);
+        return;
+      }
+
+      const baseImportance = importanceMap.get(file.path) ?? 0;
+      const hotspotBoost = hotspotPaths.has(file.path) ? 0.55 : 0;
+      const commitBoost = Math.min(
+        0.35,
+        Math.log10(Math.max(1, file.commits.length + 1)) * 0.18,
+      );
+      scored.push({
+        file,
+        score: baseImportance + hotspotBoost + commitBoost,
+      });
+    });
+
+    scored.sort((left, right) => right.score - left.score);
+
+    const budget = Math.max(pinned.length, maxVisibleBuildings);
+    const tailBudget = Math.max(0, budget - pinned.length);
+    return [...pinned, ...scored.slice(0, tailBudget).map((entry) => entry.file)];
+  }, [
+    hoveredPath,
+    hotspotPaths,
+    importanceMap,
+    maxVisibleBuildings,
+    renderableFiles,
+    selectedPath,
+  ]);
   const adaptiveCanvasDpr = Math.max(
     0.86,
     Math.min(
@@ -2044,7 +2182,6 @@ export const Scene3D = memo(function Scene3D({
     );
   }, [musicReactiveEnabled, musicSpectrum]);
   const musicEventBoost = 1 + musicPulse * 0.34;
-  const musicDensityBoost = 1 + musicPulse * 0.22;
 
   const selectedPoint = useMemo<TourPoint | null>(() => {
     if (!selectedPath) {
@@ -2140,16 +2277,14 @@ export const Scene3D = memo(function Scene3D({
       Math.round(
         baseBudget *
           modePreset.trafficDensity *
-          runtimePopulationScale *
-          musicDensityBoost,
+          runtimePopulationScale,
       ),
     );
-    return renderableRoadSegments.slice(0, budget);
+    return importRoadSegments.slice(0, budget);
   }, [
     architectureMode,
-    musicDensityBoost,
+    importRoadSegments,
     modePreset.trafficDensity,
-    renderableRoadSegments,
     riskMode,
     runtimePopulationScale,
     stackMode,
@@ -2435,11 +2570,10 @@ export const Scene3D = memo(function Scene3D({
       Math.round(
         10 *
           modePreset.builderDensity *
-          runtimePopulationScale *
-          musicDensityBoost,
+          runtimePopulationScale,
       ),
     );
-    return renderableFiles
+    return sceneFiles
       .filter((file) => hotspotPaths.has(file.path))
       .slice(0, budget)
       .map((file) => ({
@@ -2450,10 +2584,9 @@ export const Scene3D = memo(function Scene3D({
       }));
   }, [
     hotspotPaths,
-    musicDensityBoost,
     modePreset.builderDensity,
-    renderableFiles,
     runtimePopulationScale,
+    sceneFiles,
     tunedTourCameraOffset,
     visualHeightMap,
   ]);
@@ -2469,12 +2602,7 @@ export const Scene3D = memo(function Scene3D({
     }
     return renderableFiles;
   }, [renderableFiles, sceneFiles, visibleBuildingPaths]);
-  const visibleProjectEvents = useMemo(() => {
-    if (!visibleBuildingPaths) {
-      return musicReactiveProjectEvents;
-    }
-    return musicReactiveProjectEvents.filter((event) => visibleBuildingPaths.has(event.path));
-  }, [musicReactiveProjectEvents, visibleBuildingPaths]);
+  const activeProjectEvents = musicReactiveProjectEvents;
   const activeBuildingFootprints = useMemo(() => {
     if (!visibleBuildingPaths) {
       return buildingFootprints;
@@ -2493,7 +2621,7 @@ export const Scene3D = memo(function Scene3D({
     (tourMode === 'coaster' || activeBuildingFootprints.length > 0);
   const hotspotBillboards = useMemo(() => {
     const strongestByPath = new Map<string, ProjectCityEvent>();
-    visibleProjectEvents.forEach((event) => {
+    activeProjectEvents.forEach((event) => {
       const existing = strongestByPath.get(event.path);
       if (!existing || existing.intensity < event.intensity) {
         strongestByPath.set(event.path, event);
@@ -2505,8 +2633,7 @@ export const Scene3D = memo(function Scene3D({
       Math.round(
         13 *
           modePreset.builderDensity *
-          runtimePopulationScale *
-          musicDensityBoost,
+          runtimePopulationScale,
       ),
     );
     return Array.from(strongestByPath.values())
@@ -2521,7 +2648,7 @@ export const Scene3D = memo(function Scene3D({
         intensity: event.intensity,
         type: event.type,
       }));
-  }, [modePreset.builderDensity, musicDensityBoost, runtimePopulationScale, visibleProjectEvents]);
+  }, [activeProjectEvents, modePreset.builderDensity, runtimePopulationScale]);
   const buildingPerformanceTier: PostFxQuality =
     postFxQuality === 'low' ||
     sceneQualityCap === 'low' ||
@@ -2531,6 +2658,12 @@ export const Scene3D = memo(function Scene3D({
           sceneQualityCap === 'medium' ||
           sceneFiles.length > 220 ||
           totalFloorCount > 3600
+        ? 'medium'
+        : 'high';
+  const terrainQuality: PostFxQuality =
+    runtimeProfile === 'performance'
+      ? 'low'
+      : runtimeProfile === 'balanced' || heavySceneComplexity
         ? 'medium'
         : 'high';
   const shadowQuality: PostFxQuality =
@@ -2713,11 +2846,11 @@ export const Scene3D = memo(function Scene3D({
         seed={citySeed}
         wetness={modeFlags.roadWetness}
         showGrid={modeFlags.showDistrictGrid}
-        files={renderableFiles}
-        roadSegments={renderableRoadSegments}
+        files={sceneFiles}
+        roadSegments={importRoadSegments}
         enableWetReflections={enableWetReflections}
         reflectionQuality={postFxQuality}
-        quality={buildingPerformanceTier}
+        quality={terrainQuality}
       />
 
       <ModeSignatureLayer
@@ -2818,7 +2951,7 @@ export const Scene3D = memo(function Scene3D({
         />
       )}
 
-      {renderableFiles.map((file) => (
+      {displayedFiles.map((file) => (
         <Building
           key={file.path}
           file={file}
@@ -2891,7 +3024,7 @@ export const Scene3D = memo(function Scene3D({
         color={sceneAccentColor}
         mode={viewMode}
         cityBounds={cityBounds}
-        buildingFootprints={activeBuildingFootprints}
+        buildingFootprints={buildingFootprints}
         selectedDroneIndex={followDroneIndex}
         onSelectDrone={onFollowDroneChange}
       />
@@ -2901,23 +3034,23 @@ export const Scene3D = memo(function Scene3D({
       {modeFlags.showProjectEvents && (
         <>
           <ProjectEventSignals
-            events={visibleProjectEvents}
+            events={activeProjectEvents}
             mode={viewMode}
             intensityBoost={tunedEventIntensityBoost * musicEventBoost}
           />
           <ProjectEventRoutes
-            events={visibleProjectEvents}
+            events={activeProjectEvents}
             mode={viewMode}
             accentColor={sceneAccentColor}
           />
           <CityActivities
-            events={visibleProjectEvents}
+            events={activeProjectEvents}
             mode={viewMode}
             accentColor={sceneAccentColor}
             presetIntensity={cinematicIntensity * (1 + musicPulse * 0.16)}
           />
           <EventFireworks
-            events={visibleProjectEvents}
+            events={activeProjectEvents}
             mode={viewMode}
             accentColor={sceneAccentColor}
             quality={postFxQuality}
@@ -2925,20 +3058,18 @@ export const Scene3D = memo(function Scene3D({
             musicPulse={musicPulse}
           />
           <GroundEventAgents
-            events={visibleProjectEvents}
+            events={activeProjectEvents}
             cityBounds={cityBounds}
-            buildingFootprints={activeBuildingFootprints}
+            buildingFootprints={buildingFootprints}
             mode={viewMode}
             color={sceneAccentColor}
             seed={citySeed}
             serviceMultiplier={modePreset.serviceMultiplier}
             pedestrianMultiplier={modePreset.pedestrianMultiplier}
-            density={modePreset.agentDensity * runtimePopulationScale * visibleCoverage * musicDensityBoost}
+            density={modePreset.agentDensity * runtimePopulationScale}
             maxAgents={Math.round(
               modePreset.agentBudget *
-                runtimePopulationScale *
-                visibleCoverage *
-                musicDensityBoost,
+                runtimePopulationScale,
             )}
           />
         </>
@@ -2947,10 +3078,10 @@ export const Scene3D = memo(function Scene3D({
       <AirTraffic
         enabled={modeFlags.showAirTraffic}
         cityBounds={cityBounds}
-        buildingFootprints={activeBuildingFootprints}
+        buildingFootprints={buildingFootprints}
         color={sceneAccentColor}
         seed={citySeed}
-        density={modePreset.airTrafficDensity * runtimePopulationScale * visibleCoverage * musicDensityBoost}
+        density={modePreset.airTrafficDensity * runtimePopulationScale}
       />
 
       <OrbitControls
@@ -2972,8 +3103,8 @@ export const Scene3D = memo(function Scene3D({
         controlsRef={controlsRef}
         selectedPoint={selectedPoint}
         tourPoints={tourPoints}
-        roadSegments={activeRoadSegments}
-        buildingFootprints={activeBuildingFootprints}
+        roadSegments={importRoadSegments}
+        buildingFootprints={buildingFootprints}
         mode={viewMode}
         tourMode={tourMode}
         followDroneIndex={followDroneIndex}
