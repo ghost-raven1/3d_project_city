@@ -59,6 +59,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}@postgres:5432/${POSTGRES_DB:-repo_city}
       DB_SYNCHRONIZE: ${DB_SYNCHRONIZE:-false}
       DB_ALLOW_SYNC_IN_PRODUCTION: ${DB_ALLOW_SYNC_IN_PRODUCTION:-false}
+      DB_AUTO_MIGRATE: ${DB_AUTO_MIGRATE:-true}
       DB_SSL: 'false'
       MAX_COMMITS: 0
       GITHUB_CONCURRENCY: 5
@@ -146,19 +147,11 @@ services:
       - ./infra/nginx/entrypoint/04-select-template.sh:/docker-entrypoint.d/04-select-template.sh:ro
       - certbot_www:/var/www/certbot
       - certbot_certs:/etc/letsencrypt
-    command:
-      - /bin/sh
-      - -c
-      - |
-        while :; do
-          sleep 6h & wait $${!}
-          nginx -s reload
-        done &
-        exec nginx -g 'daemon off;'
+    command: ['nginx', '-g', 'daemon off;']
     healthcheck:
       test:
         - CMD-SHELL
-        - wget -q -O - http://127.0.0.1/ >/dev/null 2>&1
+        - wget -q --spider http://127.0.0.1/ >/dev/null 2>&1 || wget -q --spider --no-check-certificate https://127.0.0.1/ >/dev/null 2>&1
       interval: 20s
       timeout: 5s
       retries: 8

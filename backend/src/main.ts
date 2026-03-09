@@ -1,6 +1,10 @@
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import {
+  runPendingMigrations,
+  shouldAutoMigrate,
+} from './database/migrator';
 
 function parseCorsOrigin(raw: string | undefined): string[] | '*' {
   const normalized = (raw ?? '*').trim();
@@ -36,6 +40,17 @@ async function bootstrap() {
   const corsOrigin = parseCorsOrigin(process.env.CORS_ORIGIN);
   const wsCorsOrigin = parseCorsOrigin(process.env.WS_CORS_ORIGIN);
   assertCorsForProduction(nodeEnv, corsOrigin, wsCorsOrigin);
+
+  if (shouldAutoMigrate()) {
+    const appliedMigrations = await runPendingMigrations();
+    if (appliedMigrations.length === 0) {
+      console.log('[migrate] no pending migrations');
+    } else {
+      console.log(
+        `[migrate] applied (${appliedMigrations.length}): ${appliedMigrations.join(', ')}`,
+      );
+    }
+  }
 
   const app = await NestFactory.create(AppModule);
   const httpAdapter = app.getHttpAdapter();

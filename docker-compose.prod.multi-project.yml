@@ -1,0 +1,8 @@
+services:
+  backend:
+    ports:
+      - '${APP_API_PORT:-13000}:3000'
+
+  frontend:
+    ports:
+      - '${APP_PORT:-18080}:80'

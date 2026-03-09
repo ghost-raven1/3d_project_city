@@ -11,7 +11,11 @@
     "dev:backend": "npm run dev --workspace backend",
     "dev:frontend": "npm run dev --workspace frontend",
     "build": "npm run build --workspace backend && npm run build --workspace frontend",
-    "test:e2e:ws": "npm run build --workspace backend && npm run test:e2e:ws --workspace backend"
+    "db:migrate:status": "npm run build --workspace backend && npm run db:migrate:status --workspace backend",
+    "db:migrate:up": "npm run build --workspace backend && npm run db:migrate:up --workspace backend",
+    "db:migrate:down": "npm run build --workspace backend && npm run db:migrate:down --workspace backend",
+    "test:e2e:ws": "npm run build --workspace backend && npm run test:e2e:ws --workspace backend",
+    "deploy:prod": "./scripts/prod-deploy.sh"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

@@ -165,6 +165,7 @@ Production (`.env.prod`, required for `docker-compose.prod.yml`):
 - `POSTGRES_PASSWORD=change-me`
 - `DB_SYNCHRONIZE=false`
 - `DB_ALLOW_SYNC_IN_PRODUCTION=false`
+- `DB_AUTO_MIGRATE=true` (auto-apply pending migrations on backend startup)
 - `LETSENCRYPT_EMAIL=ops@example.com`
 - `CERTBOT_DOMAINS=city.example.com,www.city.example.com` (optional, comma-separated SAN list)
 - `GITHUB_TOKEN=` (optional)
@@ -205,6 +206,7 @@ Production safety guards:
 
 - Wildcard `CORS_ORIGIN` / `WS_CORS_ORIGIN` is rejected in production.
 - `DB_SYNCHRONIZE=true` is rejected in production unless `DB_ALLOW_SYNC_IN_PRODUCTION=true`.
+- Production schema should be managed with migrations; keep `DB_SYNCHRONIZE=false` in normal operation.
 
 ## Caching behavior
 
@@ -225,6 +227,19 @@ npm run test --workspace frontend
 npm run test:e2e:ws
 npm run build
 ```
+
+## Database migrations
+
+Backend uses Umzug + Sequelize storage (`SequelizeMeta` table).
+
+```bash
+npm run build --workspace backend
+npm run db:migrate:status --workspace backend
+npm run db:migrate:up --workspace backend
+npm run db:migrate:down --workspace backend
+```
+
+Production compose runs migrations on backend startup when `DB_AUTO_MIGRATE=true`.
 
 For websocket e2e smoke test, provide Postgres DSN (example):
 
@@ -266,6 +281,34 @@ chmod +x scripts/prod-certbot-init.sh
 
 After bootstrap, `certbot` runs in background and renews certificates automatically.
 `edge` (nginx) applies hardened headers in production templates (`HSTS`, `CSP`, `X-Frame-Options`, `X-Content-Type-Options`, `Permissions-Policy`, `COOP/CORP`, and related hardening headers).
+
+### Production deploy on shared server (multiple projects)
+
+Use this mode when the server hosts other apps and `80/443` are already occupied.
+
+```bash
+npm run deploy:prod
+```
+
+Default deploy target and ports:
+
+- `SERVER_HOST=31.172.65.206`
+- `PUBLIC_HOST=31.172.65.206` (used in frontend/backend URLs and CORS)
+- `APP_PORT=18080` (frontend)
+- `APP_API_PORT=13000` (backend)
+- `COMPOSE_PROJECT_NAME=3d-project-city` (docker resource isolation)
+
+Example with custom ports/user:
+
+```bash
+SERVER_USER=ubuntu APP_PORT=18100 APP_API_PORT=13100 npm run deploy:prod
+```
+
+Optional: upload local `.env.prod` during deploy:
+
+```bash
+PUSH_ENV_FILE=1 npm run deploy:prod
+```
 
 ## Notes
 

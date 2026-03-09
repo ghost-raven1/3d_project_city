@@ -6,6 +6,9 @@
     "dev": "ts-node-dev --respawn --transpile-only src/main.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
+    "db:migrate:up": "node dist/scripts/migrate.js up",
+    "db:migrate:down": "node dist/scripts/migrate.js down",
+    "db:migrate:status": "node dist/scripts/migrate.js status",
     "lint": "eslint \"src/**/*.ts\"",
     "test:e2e:ws": "node --test test/ws-smoke.test.mjs"
   },
@@ -25,7 +28,8 @@
     "rxjs": "^7.8.1",
     "sequelize": "^6.37.3",
     "sequelize-typescript": "^2.1.6",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "umzug": "^3.8.2"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
